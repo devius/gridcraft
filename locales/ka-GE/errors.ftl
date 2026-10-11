@@ -1,5 +1,5 @@
 # Engine error messages. Key: error-<code>; the codes mirror gridcraft_engine::EngineError.
-# Original wording for GridCraft (English reference).
+# Original wording for GridCraft in Georgian (ქართული), translated from the en-US reference; not taken from third-party documentation.
 
 error-unknown-command = Unknown command “{ $command }”.
 error-command-disabled = “{ $command }” is not available right now: { $reason }

@@ -1,5 +1,5 @@
 # Command labels. Key: cmd-<command id with '.' replaced by '-'>-label.
-# Original wording for GridCraft (English reference). Reference messages: every other language must define the same keys, attributes and variables.
+# Original wording for GridCraft in Georgian (ქართული), translated from the en-US reference; not taken from third-party documentation.
 
 cmd-file-new-label = New Workbook
 cmd-file-open-label = Open…

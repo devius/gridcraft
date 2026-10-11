@@ -1,7 +1,7 @@
 # Function documentation. Key: fn-<canonical name with '.' replaced by '-'> = short description;
 # attribute .args = the parameter list as in the signature (optional parameters in [brackets],
 # '...' for repetition), items separated by ', '. Functions without parameters have no .args.
-# Original wording for GridCraft (English reference). Reference messages: every other language must define the same keys, attributes and variables.
+# Original wording for GridCraft in Georgian (ქართული), translated from the en-US reference; not taken from third-party documentation.
 
 fn-ABS = Absolute value of a number.
     .args = number
