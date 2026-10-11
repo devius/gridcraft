@@ -184,6 +184,14 @@ fn japanese_keeps_english_function_names() {
 }
 
 #[test]
+fn georgian_keeps_english_names_with_georgian_separators() {
+    let d = dialect("ka-GE", "ka-GE");
+    assert_eq!(local("SUM(1,5;2)", &d), parse("SUM(1.5,2)").unwrap());
+    assert_eq!(local("{1.2;3.4}", &d), parse("{1,2;3,4}").unwrap());
+    assert_eq!(print_local(&parse("IF(A1>1.5,TRUE,#N/A)").unwrap(), &d), "IF(A1>1,5;TRUE;#N/A)");
+}
+
+#[test]
 fn token_spans_are_local_byte_offsets() {
     let d = pt();
     let src = "SOMA(B2;A1;1,5)";

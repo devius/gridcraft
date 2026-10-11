@@ -61,6 +61,9 @@ fn negotiation_handles_os_and_browser_tags() {
     assert_eq!(negotiate_region("zh-Hant-HK").tag, "zh-TW");
     assert_eq!(negotiate_region("zh-SG").tag, "zh-CN");
     assert_eq!(negotiate_language("ja").tag, "ja-JP");
+    assert_eq!(negotiate_language("ka").tag, "ka-GE");
+    assert_eq!(negotiate_language("ka_GE.UTF-8").tag, "ka-GE");
+    assert_eq!(negotiate_region("ka-GE").tag, "ka-GE");
 }
 
 #[test]
