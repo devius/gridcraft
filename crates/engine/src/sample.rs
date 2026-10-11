@@ -265,7 +265,12 @@ fn budget(s: &mut Session, t: Text) -> bool {
     ok &= run(s, "cell.set", json!({"cell": "F15", "input": "=D15/C15"}));
     ok &= run(s, "home.cellStyle", json!({"range": "B4:F4", "name": "Heading 3"}));
     ok &= run(s, "home.cellStyle", json!({"range": "B15:F15", "name": "Total"}));
-    ok &= run(s, "home.numberFormat", json!({"range": "C5:E15", "format": "Accounting"}));
+    // Accounting is a dollar format; the Georgian budget is in lari.
+    ok &= if t.is_english() {
+        run(s, "home.numberFormat", json!({"range": "C5:E15", "format": "Accounting"}))
+    } else {
+        run(s, "home.numberFormat", json!({"range": "C5:E15", "code": "#,##0.00 \"₾\";[Red]-#,##0.00 \"₾\""}))
+    };
     ok &= run(s, "home.numberFormat", json!({"range": "F5:F15", "code": "0%"}));
     ok &= run(
         s,
