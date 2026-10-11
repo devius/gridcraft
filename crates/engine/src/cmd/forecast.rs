@@ -42,7 +42,7 @@ pub fn specs() -> Vec<CommandSpec> {
         "Forecast Sheet",
         ["Data", "Forecast"],
         None,
-        "{timeline?: \"A2:A25\", values?: \"B2:B25\" (default: the first two columns of `range`, the selection or the current region; a text first cell is the header), end?: timeline value or date text | periods?: n (default: a third of the history, at least 1; ≤10,000 and history × periods ≤ 500,000; history ≤ 10,000 rows), confidenceInterval?: bool (default true), confidence?: 0.95 or 95, seasonality?: \"auto\" | 0 (none) | 2–8,760, fillMissing?: interpolate|zeros, aggregate?: average|count|counta|max|median|min|sum, statistics?: bool, chart?: line|column} → {sheet, table, chart, history, periods}. Inserts a sheet before the active one: timeline, values, Forecast (FORECAST.ETS), Lower/Upper Confidence Bound (FORECAST.ETS.CONFINT), optional FORECAST.ETS.STAT table, and a chart.",
+        "{timeline?: \"A2:A25\", values?: \"B2:B25\" (default: the first two columns of `range`, the selection or the current region; a text first cell is the header), end?: timeline value or date text (typed in `region`, default canonical en-US), region?: tag `end` was typed in | periods?: n (default: a third of the history, at least 1; ≤10,000 and history × periods ≤ 500,000; history ≤ 10,000 rows), confidenceInterval?: bool (default true), confidence?: 0.95 or 95, seasonality?: \"auto\" | 0 (none) | 2–8,760, fillMissing?: interpolate|zeros, aggregate?: average|count|counta|max|median|min|sum, statistics?: bool, chart?: line|column} → {sheet, table, chart, history, periods}. Inserts a sheet before the active one: timeline, values, Forecast (FORECAST.ETS), Lower/Upper Confidence Bound (FORECAST.ETS.CONFINT), optional FORECAST.ETS.STAT table, and a chart.",
         has_doc,
         forecast_sheet
     )]
@@ -225,7 +225,7 @@ fn forecast_sheet(s: &mut Session, p: &Json) -> Result<Json> {
     }
     let end = match p.get("end") {
         Some(Json::Number(n)) => n.as_f64(),
-        Some(Json::String(t)) if !t.trim().is_empty() => match gridcraft_core::parse::parse_input(t.trim(), sys).value {
+        Some(Json::String(t)) if !t.trim().is_empty() => match gridcraft_core::parse::parse_input_in(t.trim(), sys, typed_region(p, CMD)?).value {
             Value::Number(end) => Some(end),
             _ => return Err(bad(CMD, format!("`end` is not a number or a date: `{t}`"))),
         },
@@ -520,6 +520,22 @@ mod tests {
         let big = MAX_HISTORY + 2;
         let r = s.execute("data.forecastSheet", json!({"timeline": format!("A1:A{big}"), "values": format!("B1:B{big}")}));
         assert!(r.is_err());
+    }
+
+    #[test]
+    fn forecast_end_is_read_in_the_region_it_was_typed_in() {
+        let end = |region: Option<&str>| {
+            let mut s = session_with_history();
+            s.execute("app.region", json!({"region": "de-DE"})).unwrap();
+            let mut p = json!({"timeline": "A2:A17", "values": "B2:B17", "end": "22,0", "seasonality": 4});
+            if let Some(tag) = region {
+                p["region"] = json!(tag);
+            }
+            s.execute("data.forecastSheet", p).map(|r| r["periods"].clone())
+        };
+        // Canonical text: `22,0` is no number, whatever the session's region is.
+        assert!(end(None).unwrap_err().to_string().contains("not a number"));
+        assert_eq!(end(Some("de-DE")).unwrap(), 6);
     }
 
     #[test]
