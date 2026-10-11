@@ -724,178 +724,178 @@ ui-stacked-area = დაგროვებითი ფართობითი
 ui-pie-or-doughnut = წრიული ან რგოლოვანი
 ui-scatter-or-bubble = წერტილოვანი ან ბუშტოვანი
 ui-scatter-with-lines = წერტილოვანი ხაზებით
-ui-bubble = Bubble
-ui-statistic = Statistic
-ui-histogram = Histogram
-ui-box-whisker = Box & Whisker
-ui-hierarchy-more = Hierarchy & more
-ui-treemap = Treemap
-ui-sunburst = Sunburst
-ui-waterfall = Waterfall
-ui-funnel = Funnel
-ui-stock = Stock
-ui-combo = Combo
-ui-sparklines = Sparklines
-ui-win-loss = Win/Loss
-ui-link = Link
-ui-symbol = Symbol
-ui-select-and-move-ink-and-shapes = Select and move ink and shapes
-ui-highlighter = Highlighter
-ui-draw-with-ink = Draw with ink
-ui-eraser = Eraser
-ui-erase-ink-strokes = Erase ink strokes
-ui-convert-the-last-ink-stroke-to-a-shape = Convert the last ink stroke to a shape
-ui-themes = Themes
-ui-margins = Margins
-ui-wide = Wide
-ui-narrow = Narrow
-ui-custom-margins-ellipsis = Custom Margins…
-ui-portrait = Portrait
-ui-landscape = Landscape
-ui-paper-size = Paper Size
-ui-letter = Letter
+ui-bubble = ბუშტოვანი
+ui-statistic = სტატისტიკური
+ui-histogram = ჰისტოგრამა
+ui-box-whisker = ყუთი და ულვაშები
+ui-hierarchy-more = იერარქია და სხვა
+ui-treemap = ხის რუკა
+ui-sunburst = მზისებრი
+ui-waterfall = ჩანჩქერი
+ui-funnel = ძაბრი
+ui-stock = საბირჟო
+ui-combo = კომბინირებული
+ui-sparklines = მინიდიაგრამები
+ui-win-loss = მოგება/წაგება
+ui-link = ბმული
+ui-symbol = სიმბოლო
+ui-select-and-move-ink-and-shapes = მელნისა და ფიგურების მონიშვნა და გადაადგილება
+ui-highlighter = მარკერი
+ui-draw-with-ink = მელნით ხატვა
+ui-eraser = საშლელი
+ui-erase-ink-strokes = მელნის შტრიხების წაშლა
+ui-convert-the-last-ink-stroke-to-a-shape = ბოლო შტრიხის ფიგურად გარდაქმნა
+ui-themes = თემები
+ui-margins = არშიები
+ui-wide = ფართო
+ui-narrow = ვიწრო
+ui-custom-margins-ellipsis = საკუთარი არშიები…
+ui-portrait = ვერტიკალური
+ui-landscape = ჰორიზონტალური
+ui-paper-size = ქაღალდის ზომა
+ui-letter = წერილი
 ui-legal = Legal
 ui-tabloid = Tabloid
 ui-executive = Executive
 ui-a3 = A3
 ui-a4 = A4
 ui-a5 = A5
-ui-print-area = Print Area
-ui-set-print-area = Set Print Area
-ui-clear-print-area = Clear Print Area
-ui-breaks = Breaks
-ui-page-breaks = Page Breaks
-ui-insert-page-break = Insert Page Break
-ui-remove-page-break = Remove Page Break
-ui-reset-all-page-breaks = Reset All Page Breaks
-ui-print-titles = Print Titles
-ui-view = View
-ui-print = Print
-ui-headings = Headings
-ui-insert-function = Insert Function
-ui-autosum = AutoSum
-ui-financial = Financial
-ui-logical = Logical
-ui-define-name = Define Name
-ui-use-in-formula = Use in Formula
-ui-create-from-selection = Create from Selection
-ui-trace-precedents = Trace Precedents
-ui-trace-dependents = Trace Dependents
-ui-remove-arrows = Remove Arrows
-ui-show-formulas = Show Formulas
-ui-calculation-options = Calculation Options
-ui-automatic-except-for-data-tables = Automatic Except for Data Tables
-ui-manual = Manual
-ui-calculate-sheet = Calculate Sheet
-ui-import-a-text-or-csv-file = Import a text or CSV file
-ui-custom-sort = Custom Sort
-ui-text-to-columns = Text to Columns
-ui-data-validation-ellipsis = Data Validation…
-ui-circle-invalid-data = Circle Invalid Data
-ui-clear-validation = Clear Validation
-ui-what-if-analysis = What-If Analysis
-ui-goal-seek-ellipsis = Goal Seek…
-ui-scenario-manager-ellipsis = Scenario Manager…
-ui-data-table-ellipsis = Data Table…
-ui-check-accessibility = Check Accessibility
-ui-comments-pane = Comments pane
-ui-delete-comment = Delete Comment
-ui-show-hide-note = Show/Hide Note
-ui-protect-workbook-structure = Protect Workbook structure
-ui-formula-bar = Formula Bar
-ui-zoom-ellipsis = Zoom…
-ui-zoom-to-100 = Zoom to 100%
-ui-zoom-to-selection = Zoom to Selection
-ui-freeze-panes = Freeze Panes
-ui-freeze-top-row = Freeze Top Row
-ui-freeze-first-column = Freeze First Column
-ui-unfreeze-panes = Unfreeze Panes
-ui-search-and-run-any-command = Search and run any command
-ui-how-agents-drive-gridcraft-mcp-control-channel = How agents drive GridCraft (MCP / control channel)
-ui-every-command-run-in-this-session-replayable = Every command run in this session (replayable)
-ui-version-contributors-and-the-ai-models-that-helped = Version, contributors and the AI models that helped
-ui-table-name = Table Name:
-ui-convert-to-range = Convert to Range
-ui-header-row = Header Row
-ui-total-row = Total Row
-ui-banded-rows = Banded Rows
-ui-first-column = First Column
-ui-last-column = Last Column
-ui-banded-columns = Banded Columns
-ui-table-styles = Table Styles
-ui-add-chart-element = Add Chart Element
-ui-legend-bottom = Legend: Bottom
-ui-legend-right = Legend: Right
-ui-legend-top = Legend: Top
-ui-legend-none = Legend: None
-ui-data-labels-show = Data Labels: Show
-ui-data-labels-none = Data Labels: None
-ui-gridlines-show = Gridlines: Show
-ui-gridlines-none = Gridlines: None
-ui-switch-row-column = Switch Row/Column
-ui-change-chart-type = Change Chart Type
-ui-format-chart-pane = Format Chart pane
-ui-edit-chart-title = Edit chart title
-ui-delete-chart = Delete chart
-ui-insert-link = Insert Link
+ui-print-area = ბეჭდვის არე
+ui-set-print-area = ბეჭდვის არის დაყენება
+ui-clear-print-area = ბეჭდვის არის გასუფთავება
+ui-breaks = გამყოფები
+ui-page-breaks = გვერდის გამყოფები
+ui-insert-page-break = გვერდის გამყოფის ჩასმა
+ui-remove-page-break = გვერდის გამყოფის მოხსნა
+ui-reset-all-page-breaks = ყველა გვერდის გამყოფის აღდგენა
+ui-print-titles = სათაურების ბეჭდვა
+ui-view = ჩვენება
+ui-print = ბეჭდვა
+ui-headings = სათაურები
+ui-insert-function = ფუნქციის ჩასმა
+ui-autosum = ავტოჯამი
+ui-financial = ფინანსური
+ui-logical = ლოგიკური
+ui-define-name = სახელის განსაზღვრა
+ui-use-in-formula = ფორმულაში გამოყენება
+ui-create-from-selection = მონიშნულიდან შექმნა
+ui-trace-precedents = გავლენის მქონე უჯრების მიდევნება
+ui-trace-dependents = დამოკიდებული უჯრების მიდევნება
+ui-remove-arrows = ისრების მოშორება
+ui-show-formulas = ფორმულების ჩვენება
+ui-calculation-options = გამოთვლის პარამეტრები
+ui-automatic-except-for-data-tables = ავტომატური, მონაცემთა ცხრილების გარდა
+ui-manual = ხელით
+ui-calculate-sheet = ფურცლის გადათვლა
+ui-import-a-text-or-csv-file = ტექსტური ან CSV ფაილის შემოტანა
+ui-custom-sort = საკუთარი სორტირება
+ui-text-to-columns = ტექსტის სვეტებად დაყოფა
+ui-data-validation-ellipsis = მონაცემთა შემოწმება…
+ui-circle-invalid-data = არასწორი მონაცემების შემოხაზვა
+ui-clear-validation = შემოწმების წესის მოხსნა
+ui-what-if-analysis = ანალიზი „რა მოხდება, თუ“
+ui-goal-seek-ellipsis = მიზნის ძიება…
+ui-scenario-manager-ellipsis = სცენარების მართვა…
+ui-data-table-ellipsis = მონაცემთა ცხრილი…
+ui-check-accessibility = ხელმისაწვდომობის შემოწმება
+ui-comments-pane = კომენტარების პანელი
+ui-delete-comment = კომენტარის წაშლა
+ui-show-hide-note = შენიშვნის ჩვენება/დამალვა
+ui-protect-workbook-structure = სამუშაო წიგნის სტრუქტურის დაცვა
+ui-formula-bar = ფორმულის ზოლი
+ui-zoom-ellipsis = მასშტაბი…
+ui-zoom-to-100 = მასშტაბი 100%
+ui-zoom-to-selection = მონიშნულის მასშტაბირება
+ui-freeze-panes = არეების დაფიქსირება
+ui-freeze-top-row = ზედა სტრიქონის დაფიქსირება
+ui-freeze-first-column = პირველი სვეტის დაფიქსირება
+ui-unfreeze-panes = არეების დაფიქსირების მოხსნა
+ui-search-and-run-any-command = ნებისმიერი ბრძანების მოძებნა და გაშვება
+ui-how-agents-drive-gridcraft-mcp-control-channel = როგორ მართავენ აგენტები GridCraft-ს (MCP / მართვის არხი)
+ui-every-command-run-in-this-session-replayable = ამ სესიაში შესრულებული ყველა ბრძანება (განმეორებადი)
+ui-version-contributors-and-the-ai-models-that-helped = ვერსია, მონაწილეები და დამხმარე AI მოდელები
+ui-table-name = ცხრილის სახელი:
+ui-convert-to-range = დიაპაზონად გარდაქმნა
+ui-header-row = სათაურის სტრიქონი
+ui-total-row = ჯამის სტრიქონი
+ui-banded-rows = ზოლიანი სტრიქონები
+ui-first-column = პირველი სვეტი
+ui-last-column = ბოლო სვეტი
+ui-banded-columns = ზოლიანი სვეტები
+ui-table-styles = ცხრილის სტილები
+ui-add-chart-element = დიაგრამის ელემენტის დამატება
+ui-legend-bottom = ლეგენდა: ქვემოთ
+ui-legend-right = ლეგენდა: მარჯვნივ
+ui-legend-top = ლეგენდა: ზემოთ
+ui-legend-none = ლეგენდა: არ არის
+ui-data-labels-show = მონაცემთა წარწერები: ჩვენება
+ui-data-labels-none = მონაცემთა წარწერები: არ არის
+ui-gridlines-show = ბადე: ჩვენება
+ui-gridlines-none = ბადე: არ არის
+ui-switch-row-column = სტრიქონი/სვეტის შეცვლა
+ui-change-chart-type = დიაგრამის ტიპის შეცვლა
+ui-format-chart-pane = დიაგრამის ფორმატირების პანელი
+ui-edit-chart-title = დიაგრამის სათაურის რედაქტირება
+ui-delete-chart = დიაგრამის წაშლა
+ui-insert-link = ბმულის ჩასმა
 ui-ribbon-label-about-gridcraft =
-    About
-    GridCraft
+    GridCraft-ის
+    შესახებ
 ui-ribbon-label-action-journal =
-    Action
-    Journal
+    მოქმედებების
+    ჟურნალი
 ui-ribbon-label-add-chart-element =
-    Add Chart
-    Element
+    დიაგრამის
+    ელემენტის დამატება
 ui-ribbon-label-agent-control =
-    Agent
-    Control
+    აგენტის
+    მართვა
 ui-ribbon-label-calculation-options =
-    Calculation
-    Options
+    გამოთვლის
+    პარამეტრები
 ui-ribbon-label-cell-styles =
-    Cell
-    Styles
+    უჯრის
+    სტილები
 ui-ribbon-label-change-chart-type =
-    Change
-    Chart Type
+    დიაგრამის ტიპის
+    შეცვლა
 ui-ribbon-label-chart-title =
-    Chart
-    Title
+    დიაგრამის
+    სათაური
 ui-ribbon-label-check-accessibility =
-    Check
-    Accessibility
+    ხელმისაწვდომობის
+    შემოწმება
 ui-ribbon-label-command-palette =
-    Command
-    Palette
-ui-ribbon-label-comment = Comment
+    ბრძანებების
+    პალიტრა
+ui-ribbon-label-comment = კომენტარი
 ui-ribbon-label-conditional-formatting =
-    Conditional
-    Formatting
+    პირობითი
+    ფორმატირება
 ui-ribbon-label-convert-to-range =
-    Convert
-    to Range
+    დიაპაზონად
+    გარდაქმნა
 ui-ribbon-label-data-validation =
-    Data
-    Validation
+    მონაცემთა
+    შემოწმება
 ui-ribbon-label-date-time =
-    Date &
-    Time
+    თარიღი
+    და დრო
 ui-ribbon-label-delete-chart =
-    Delete
-    Chart
+    დიაგრამის
+    წაშლა
 ui-ribbon-label-find-select =
-    Find &
-    Select
+    ძებნა და
+    მონიშვნა
 ui-ribbon-label-flash-fill =
-    Flash
-    Fill
+    მყისიერი
+    შევსება
 ui-ribbon-label-format-as-table =
-    Format
-    as Table
+    ცხრილად
+    ფორმატირება
 ui-ribbon-label-format-pane =
-    Format
-    Pane
+    ფორმატირების
+    პანელი
 ui-ribbon-label-freeze-panes =
     Freeze
     Panes
