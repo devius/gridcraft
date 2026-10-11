@@ -23,8 +23,9 @@ pub fn specs() -> Vec<CommandSpec> {
 fn new_workbook(s: &mut Session, p: &Json) -> Result<Json> {
     let i = match str_param(p, "sample") {
         Some(name) => {
-            let wb = crate::sample::build(name).ok_or_else(|| bad("file.new", format!("unknown sample `{name}`")))?;
-            let title = crate::sample::title(name);
+            let lang = s.locale().ui.tag;
+            let wb = crate::sample::build_in(name, lang).ok_or_else(|| bad("file.new", format!("unknown sample `{name}`")))?;
+            let title = crate::sample::title_in(name, lang);
             s.add_document(DocState::new(with_locale(s, wb), None, title))
         }
         None => s.new_workbook(),

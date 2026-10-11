@@ -541,7 +541,7 @@ fn fallback_faces(han: HanOrder) -> Vec<(&'static str, Vec<(String, u32)>)> {
         HanOrder::TraditionalChinese => vec![tc, zh, ja, ko],
         HanOrder::Korean => vec![ko, ja, zh, tc],
     };
-    faces.extend([("sys-cyrillic", cyrillic()), ("sys-thai", thai()), ("sys-hebrew", hebrew())]);
+    faces.extend([("sys-cyrillic", cyrillic()), ("sys-thai", thai()), ("sys-hebrew", hebrew()), ("sys-georgian", georgian())]);
     faces
 }
 
@@ -718,6 +718,26 @@ fn hebrew() -> Vec<(String, u32)> {
     v
 }
 
+/// Georgian (Mkhedruli and Mtavruli) faces. Windows has Sylfaen; macOS has SF Georgian (and Arial
+/// Unicode); Linux usually has Noto Sans Georgian or DejaVu Sans.
+#[cfg(not(target_arch = "wasm32"))]
+fn georgian() -> Vec<(String, u32)> {
+    let mac_sys = "/System/Library/Fonts";
+    let mac_sup = "/System/Library/Fonts/Supplemental";
+    let win = std::env::var("WINDIR").map(|w| format!("{w}\\Fonts")).unwrap_or_else(|_| "C:\\Windows\\Fonts".into());
+    let mut v: Vec<(String, u32)> = Vec::new();
+    v.push((format!("{win}\\sylfaen.ttf"), 0)); // Sylfaen
+    v.push((format!("{mac_sys}/SFGeorgian.ttf"), 0));
+    v.push((format!("{mac_sup}/Arial Unicode.ttf"), 0));
+    for d in LINUX_CJK_DIRS {
+        v.push((format!("{d}/NotoSansGeorgian-Regular.ttf"), 0));
+        v.push((format!("{d}/noto/NotoSansGeorgian-Regular.ttf"), 0));
+        v.push((format!("{d}/DejaVuSans.ttf"), 0));
+        v.push((format!("{d}/dejavu/DejaVuSans.ttf"), 0));
+    }
+    v
+}
+
 pub fn apply(ctx: &egui::Context, dark: bool) {
     // Install both palettes before System can switch between the style slots.
     for theme in [egui::Theme::Light, egui::Theme::Dark] {
@@ -869,11 +889,11 @@ mod tests {
         let keys = |han| fallback_faces(han).into_iter().map(|(k, _)| k).collect::<Vec<_>>();
         assert_eq!(
             keys(HanOrder::Japanese),
-            ["sys-cjk-han-ja", "sys-cjk-han-zh", "sys-cjk-han-tc", "sys-cjk-hangul", "sys-cyrillic", "sys-thai", "sys-hebrew"]
+            ["sys-cjk-han-ja", "sys-cjk-han-zh", "sys-cjk-han-tc", "sys-cjk-hangul", "sys-cyrillic", "sys-thai", "sys-hebrew", "sys-georgian"]
         );
         assert_eq!(
             keys(HanOrder::Chinese),
-            ["sys-cjk-han-zh", "sys-cjk-han-tc", "sys-cjk-han-ja", "sys-cjk-hangul", "sys-cyrillic", "sys-thai", "sys-hebrew"]
+            ["sys-cjk-han-zh", "sys-cjk-han-tc", "sys-cjk-han-ja", "sys-cjk-hangul", "sys-cyrillic", "sys-thai", "sys-hebrew", "sys-georgian"]
         );
         assert_eq!(HanOrder::of("ja-JP"), HanOrder::Japanese);
         assert_eq!(HanOrder::of("ko-KR"), HanOrder::Korean);
@@ -937,7 +957,7 @@ mod tests {
         // Real render check, per script: the proportional family (what cells and the UI use) must
         // resolve a sample string to a real glyph, not the tofu replacement char. Skips a script
         // whose face is absent (a minimal machine) and fails if a face is present but not wired in.
-        let cases: [(&str, Vec<(String, u32)>, &str); 7] = [
+        let cases: [(&str, Vec<(String, u32)>, &str); 8] = [
             ("sys-cjk-han-ja", cjk_han_japanese(), "カテゴリ"),
             ("sys-cjk-han-zh", cjk_han_simplified(), "页面布局 客户端配置"),
             ("sys-cjk-han-tc", cjk_han_traditional(), "頁面配置"),
@@ -945,6 +965,7 @@ mod tests {
             ("sys-thai", thai(), "ทดสอบ"),
             ("sys-hebrew", hebrew(), "עברית"),
             ("sys-cyrillic", cyrillic(), "Русский Ёжик"),
+            ("sys-georgian", georgian(), "ქართული ᲛᲗᲐᲕᲠᲣᲚᲘ"),
         ];
         for language in ["en-US", "ja-JP", "zh-TW", "ko-KR", "ru-RU"] {
             let ctx = egui::Context::default();
