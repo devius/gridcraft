@@ -897,199 +897,198 @@ ui-ribbon-label-format-pane =
     ფორმატირების
     პანელი
 ui-ribbon-label-freeze-panes =
-    Freeze
-    Panes
+    არეების
+    დაფიქსირება
 ui-ribbon-label-get-data-text-csv =
-    Get Data
-    (Text/CSV)
+    მონაცემების მიღება
+    (ტექსტი/CSV)
 ui-ribbon-label-header-footer =
-    Header &
-    Footer
+    კოლონტიტულები
 ui-ribbon-label-ink-to-shape =
-    Ink to
-    Shape
+    მელნიდან
+    ფიგურა
 ui-ribbon-label-insert-function =
-    Insert
-    Function
+    ფუნქციის
+    ჩასმა
 ui-ribbon-label-lookup-reference =
-    Lookup &
-    Reference
+    ძებნა და
+    მიმართვა
 ui-ribbon-label-math-trig =
-    Math &
-    Trig
+    მათემატიკა და
+    ტრიგონომეტრია
 ui-ribbon-label-more-functions =
-    More
-    Functions
+    სხვა
+    ფუნქციები
 ui-ribbon-label-name-manager =
-    Name
-    Manager
+    სახელების
+    მართვა
 ui-ribbon-label-new-comment =
-    New
-    Comment
+    ახალი
+    კომენტარი
 ui-ribbon-label-page-break-preview =
-    Page Break
-    Preview
+    გვერდის
+    გამყოფების რეჟიმი
 ui-ribbon-label-page-layout =
-    Page
-    Layout
+    გვერდის
+    განლაგება
 ui-ribbon-label-pen-black =
-    Pen
-    Black
+    შავი
+    კალამი
 ui-ribbon-label-pen-blue =
-    Pen
-    Blue
+    ლურჯი
+    კალამი
 ui-ribbon-label-pen-red =
-    Pen
-    Red
+    წითელი
+    კალამი
 ui-ribbon-label-print-area =
-    Print
-    Area
+    ბეჭდვის
+    არე
 ui-ribbon-label-print-titles =
-    Print
-    Titles
+    სათაურების
+    ბეჭდვა
 ui-ribbon-label-protect-sheet =
-    Protect
-    Sheet
+    ფურცლის
+    დაცვა
 ui-ribbon-label-protect-workbook =
-    Protect
-    Workbook
+    სამუშაო
+    წიგნის დაცვა
 ui-ribbon-label-recommended-charts =
-    Recommended
-    Charts
+    რეკომენდებული
+    დიაგრამები
 ui-ribbon-label-remove-duplicates =
-    Remove
-    Duplicates
+    დუბლიკატების
+    წაშლა
 ui-ribbon-label-select-objects =
-    Select
-    Objects
+    ობიექტების
+    მონიშვნა
 ui-ribbon-label-show-comments =
-    Show
-    Comments
+    კომენტარების
+    ჩვენება
 ui-ribbon-label-sort-filter =
-    Sort &
-    Filter
+    სორტირება
+    და ფილტრი
 ui-ribbon-label-switch-row-column =
-    Switch
-    Row/Column
+    სტრიქონი/სვეტის
+    შეცვლა
 ui-ribbon-label-table-styles =
-    Table
-    Styles
+    ცხრილის
+    სტილები
 ui-ribbon-label-text-box =
-    Text
-    Box
+    ტექსტური
+    ბლოკი
 ui-ribbon-label-text-to-columns =
-    Text to
-    Columns
+    ტექსტის
+    სვეტებად დაყოფა
 ui-ribbon-label-unprotect-sheet =
-    Unprotect
-    Sheet
+    ფურცლის
+    დაცვის მოხსნა
 ui-ribbon-label-what-if-analysis =
-    What-If
-    Analysis
+    ანალიზი „რა
+    მოხდება, თუ“
 ui-ribbon-label-workbook-statistics =
-    Workbook
-    Statistics
+    სამუშაო წიგნის
+    სტატისტიკა
 ui-ribbon-label-zoom-to-selection =
-    Zoom to
-    Selection
-ui-ribbon-style-normal = Normal
-ui-ribbon-style-bad = Bad
-ui-ribbon-style-good = Good
-ui-ribbon-style-neutral = Neutral
-ui-ribbon-style-calculation = Calculation
-ui-ribbon-style-check-cell = Check Cell
-ui-ribbon-style-explanatory-text = Explanatory Text
-ui-ribbon-style-input = Input
-ui-ribbon-style-linked-cell = Linked Cell
-ui-ribbon-style-note = Note
-ui-ribbon-style-output = Output
-ui-ribbon-style-warning-text = Warning Text
-ui-ribbon-style-heading-1 = Heading 1
-ui-ribbon-style-heading-2 = Heading 2
-ui-ribbon-style-heading-3 = Heading 3
-ui-ribbon-style-heading-4 = Heading 4
-ui-ribbon-style-title = Title
-ui-ribbon-style-total = Total
-ui-ribbon-style-20-accent1 = 20% - Accent1
-ui-ribbon-style-20-accent2 = 20% - Accent2
-ui-ribbon-style-20-accent3 = 20% - Accent3
-ui-ribbon-style-20-accent4 = 20% - Accent4
-ui-ribbon-style-20-accent5 = 20% - Accent5
-ui-ribbon-style-20-accent6 = 20% - Accent6
-ui-ribbon-style-40-accent1 = 40% - Accent1
-ui-ribbon-style-40-accent2 = 40% - Accent2
-ui-ribbon-style-40-accent3 = 40% - Accent3
-ui-ribbon-style-40-accent4 = 40% - Accent4
-ui-ribbon-style-40-accent5 = 40% - Accent5
-ui-ribbon-style-40-accent6 = 40% - Accent6
-ui-ribbon-style-60-accent1 = 60% - Accent1
-ui-ribbon-style-60-accent2 = 60% - Accent2
-ui-ribbon-style-60-accent3 = 60% - Accent3
-ui-ribbon-style-60-accent4 = 60% - Accent4
-ui-ribbon-style-60-accent5 = 60% - Accent5
-ui-ribbon-style-60-accent6 = 60% - Accent6
-ui-ribbon-style-accent1 = Accent1
-ui-ribbon-style-accent2 = Accent2
-ui-ribbon-style-accent3 = Accent3
-ui-ribbon-style-accent4 = Accent4
-ui-ribbon-style-accent5 = Accent5
-ui-ribbon-style-accent6 = Accent6
-ui-ribbon-style-comma = Comma
-ui-ribbon-style-comma-0 = Comma [0]
-ui-ribbon-style-currency = Currency
-ui-ribbon-style-currency-0 = Currency [0]
-ui-ribbon-style-percent = Percent
-ui-ribbon-icon-check = check
-ui-ribbon-icon-close = close
-ui-ribbon-icon-plus = plus
-ui-ribbon-icon-minus = minus
-ui-ribbon-icon-chart = chart
-ui-ribbon-icon-line-chart = line chart
-ui-ribbon-icon-pie-chart = pie chart
-ui-ribbon-icon-scatter = scatter
-ui-ribbon-icon-table = table
-ui-ribbon-icon-sum = sum
-ui-ribbon-icon-filter = filter
-ui-ribbon-icon-lock = lock
-ui-ribbon-icon-comment = comment
-ui-ribbon-icon-note = note
-ui-ribbon-icon-picture = picture
-ui-ribbon-icon-book = book
-ui-ribbon-icon-folder = folder
-ui-ribbon-icon-search = search
-ui-ribbon-icon-calculator = calculator
-ui-ribbon-icon-link = link
-ui-ribbon-icon-pen = pen
-ui-ribbon-icon-share = share
-ui-ribbon-icon-settings = settings
-ui-ribbon-icon-home = home
-ui-ribbon-icon-save = save
-ui-ribbon-icon-theme = theme
-ui-ribbon-icon-shapes = shapes
-ui-ribbon-icon-text = text
-ui-ribbon-icon-trace = trace
-ui-ribbon-icon-validation = validation
-ui-window-title-edited = { $title } — Edited
-ui-validation-default-message = This value doesn't match the data validation restrictions defined for this cell.
-ui-dialogs-default-footer = &CPage &P of &N
-ui-sample-budget = Household Budget
-ui-sample-sales = Quarterly Sales Dashboard
-ui-sample-grades = Gradebook
-ui-options-error-separator-length = Each separator must be exactly one character.
-ui-options-error-separator-chars = Separators can be a period, comma, space, non-breaking space or apostrophe.
-ui-options-error-decimal-space = The decimal separator cannot be a space.
-ui-options-error-separators-equal = The decimal and thousands separators must be different.
-ui-workbook = Workbook
-ui-display-theme = Display theme
-ui-theme-system = System
-ui-theme-light = Light
-ui-theme-dark = Dark
-ui-border-presets = Border presets
-ui-border-preview = Border preview
-ui-preview = Preview
-ui-drag-to-fill-cells-drag-from-inside-a-cell-to-select-a-range = Drag to fill cells. Drag from inside a cell to select a range.
+    მონიშნულის
+    მასშტაბირება
+ui-ribbon-style-normal = ჩვეულებრივი
+ui-ribbon-style-bad = ცუდი
+ui-ribbon-style-good = კარგი
+ui-ribbon-style-neutral = ნეიტრალური
+ui-ribbon-style-calculation = გამოთვლა
+ui-ribbon-style-check-cell = საკონტროლო უჯრა
+ui-ribbon-style-explanatory-text = განმარტებითი ტექსტი
+ui-ribbon-style-input = შეყვანა
+ui-ribbon-style-linked-cell = დაკავშირებული უჯრა
+ui-ribbon-style-note = შენიშვნა
+ui-ribbon-style-output = გამოტანა
+ui-ribbon-style-warning-text = გამაფრთხილებელი ტექსტი
+ui-ribbon-style-heading-1 = სათაური 1
+ui-ribbon-style-heading-2 = სათაური 2
+ui-ribbon-style-heading-3 = სათაური 3
+ui-ribbon-style-heading-4 = სათაური 4
+ui-ribbon-style-title = დასახელება
+ui-ribbon-style-total = სულ
+ui-ribbon-style-20-accent1 = 20% - აქცენტი1
+ui-ribbon-style-20-accent2 = 20% - აქცენტი2
+ui-ribbon-style-20-accent3 = 20% - აქცენტი3
+ui-ribbon-style-20-accent4 = 20% - აქცენტი4
+ui-ribbon-style-20-accent5 = 20% - აქცენტი5
+ui-ribbon-style-20-accent6 = 20% - აქცენტი6
+ui-ribbon-style-40-accent1 = 40% - აქცენტი1
+ui-ribbon-style-40-accent2 = 40% - აქცენტი2
+ui-ribbon-style-40-accent3 = 40% - აქცენტი3
+ui-ribbon-style-40-accent4 = 40% - აქცენტი4
+ui-ribbon-style-40-accent5 = 40% - აქცენტი5
+ui-ribbon-style-40-accent6 = 40% - აქცენტი6
+ui-ribbon-style-60-accent1 = 60% - აქცენტი1
+ui-ribbon-style-60-accent2 = 60% - აქცენტი2
+ui-ribbon-style-60-accent3 = 60% - აქცენტი3
+ui-ribbon-style-60-accent4 = 60% - აქცენტი4
+ui-ribbon-style-60-accent5 = 60% - აქცენტი5
+ui-ribbon-style-60-accent6 = 60% - აქცენტი6
+ui-ribbon-style-accent1 = აქცენტი1
+ui-ribbon-style-accent2 = აქცენტი2
+ui-ribbon-style-accent3 = აქცენტი3
+ui-ribbon-style-accent4 = აქცენტი4
+ui-ribbon-style-accent5 = აქცენტი5
+ui-ribbon-style-accent6 = აქცენტი6
+ui-ribbon-style-comma = მძიმე
+ui-ribbon-style-comma-0 = გამყოფიანი [0]
+ui-ribbon-style-currency = ფულადი
+ui-ribbon-style-currency-0 = ფულადი [0]
+ui-ribbon-style-percent = პროცენტული
+ui-ribbon-icon-check = მონიშვნა
+ui-ribbon-icon-close = დახურვა
+ui-ribbon-icon-plus = პლუსი
+ui-ribbon-icon-minus = მინუსი
+ui-ribbon-icon-chart = დიაგრამა
+ui-ribbon-icon-line-chart = ხაზოვანი დიაგრამა
+ui-ribbon-icon-pie-chart = წრიული დიაგრამა
+ui-ribbon-icon-scatter = წერტილოვანი დიაგრამა
+ui-ribbon-icon-table = ცხრილი
+ui-ribbon-icon-sum = ჯამი
+ui-ribbon-icon-filter = ფილტრი
+ui-ribbon-icon-lock = ბოქლომი
+ui-ribbon-icon-comment = კომენტარი
+ui-ribbon-icon-note = შენიშვნა
+ui-ribbon-icon-picture = სურათი
+ui-ribbon-icon-book = წიგნი
+ui-ribbon-icon-folder = საქაღალდე
+ui-ribbon-icon-search = ძებნა
+ui-ribbon-icon-calculator = კალკულატორი
+ui-ribbon-icon-link = ბმული
+ui-ribbon-icon-pen = კალამი
+ui-ribbon-icon-share = გაზიარება
+ui-ribbon-icon-settings = პარამეტრები
+ui-ribbon-icon-home = მთავარი
+ui-ribbon-icon-save = შენახვა
+ui-ribbon-icon-theme = თემა
+ui-ribbon-icon-shapes = ფიგურები
+ui-ribbon-icon-text = ტექსტი
+ui-ribbon-icon-trace = მიდევნება
+ui-ribbon-icon-validation = შემოწმება
+ui-window-title-edited = { $title } — შეცვლილია
+ui-validation-default-message = ეს მნიშვნელობა არ აკმაყოფილებს ამ უჯრისთვის განსაზღვრულ მონაცემთა შემოწმების წესებს.
+ui-dialogs-default-footer = &Cგვერდი &P / &N
+ui-sample-budget = ოჯახის ბიუჯეტი
+ui-sample-sales = კვარტალური გაყიდვების პანელი
+ui-sample-grades = შეფასებების ჟურნალი
+ui-options-error-separator-length = თითოეული გამყოფი ზუსტად ერთი სიმბოლო უნდა იყოს.
+ui-options-error-separator-chars = გამყოფი შეიძლება იყოს წერტილი, მძიმე, სივრცე, განუყოფელი სივრცე ან აპოსტროფი.
+ui-options-error-decimal-space = ათწილადის გამყოფი სივრცე ვერ იქნება.
+ui-options-error-separators-equal = ათწილადისა და ათასების გამყოფები უნდა განსხვავდებოდეს.
+ui-workbook = სამუშაო წიგნი
+ui-display-theme = ინტერფეისის თემა
+ui-theme-system = სისტემური
+ui-theme-light = ღია
+ui-theme-dark = ბნელი
+ui-border-presets = ჩარჩოს შაბლონები
+ui-border-preview = ჩარჩოს გადახედვა
+ui-preview = წინასწარი ნახვა
+ui-drag-to-fill-cells-drag-from-inside-a-cell-to-select-a-range = გადაათრიეთ უჯრების შესავსებად. დიაპაზონის მოსანიშნად გადაათრიეთ უჯრის შიგნიდან.
 
-ui-interface-language = Interface language
-ui-ribbon-page-layout-orientation = Orientation
-ui-ribbon-sheet-options-view = View
-ui-the-text-box-s-worksheet-is-no-longer-active = The text box's worksheet is no longer active.
+ui-interface-language = ინტერფეისის ენა
+ui-ribbon-page-layout-orientation = ორიენტაცია
+ui-ribbon-sheet-options-view = ჩვენება
+ui-the-text-box-s-worksheet-is-no-longer-active = ტექსტური ბლოკის ფურცელი აღარ არის აქტიური.
