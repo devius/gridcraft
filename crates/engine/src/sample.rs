@@ -104,6 +104,10 @@ pub fn build(name: &str) -> Option<Workbook> {
 pub fn build_in(name: &str, lang: &str) -> Option<Workbook> {
     let t = Text::of(lang);
     let mut s = Session::new();
+    // Default content names the commands insert (a table's total row, …) in the same language.
+    if !t.is_english() && s.execute("app.setLocale", json!({"uiLanguage": lang})).is_err() {
+        log::warn!("sample: no locale {lang}");
+    }
     let mut wb = Workbook::new();
     if let Some(sh) = wb.sheet_mut(0) {
         sh.name = match name {
@@ -129,6 +133,11 @@ pub fn build_in(name: &str, lang: &str) -> Option<Workbook> {
         sh.view_active = gridcraft_core::CellRef::default();
     }
     Some(wb)
+}
+
+/// A column width for the sample's language: Georgian labels and the `₾` suffix run about 30% wider.
+fn wide(t: Text, px: u32) -> u32 {
+    if t.is_english() { px } else { px * 13 / 10 }
 }
 
 fn run(s: &mut Session, id: &str, p: serde_json::Value) -> bool {
@@ -175,9 +184,9 @@ fn sales(s: &mut Session, t: Text) -> bool {
     ok &= run(s, "home.conditionalFormat", json!({"range": "G5:G10", "rule": {"type": "dataBar", "color": "#5B9BD5"}}));
     ok &= run(s, "home.conditionalFormat", json!({"range": "H5:H10", "rule": {"type": "iconSet", "set": "3Arrows"}}));
     ok &= run(s, "home.columnWidth", json!({"cols": "A:A", "width": 20}));
-    ok &= run(s, "home.columnWidth", json!({"cols": "B:B", "width": 132}));
-    ok &= run(s, "home.columnWidth", json!({"cols": "C:G", "width": 84}));
-    ok &= run(s, "home.columnWidth", json!({"cols": "H:I", "width": 76}));
+    ok &= run(s, "home.columnWidth", json!({"cols": "B:B", "width": wide(t, 132)}));
+    ok &= run(s, "home.columnWidth", json!({"cols": "C:G", "width": wide(t, 84)}));
+    ok &= run(s, "home.columnWidth", json!({"cols": "H:I", "width": wide(t, 76)}));
     ok &= run(s, "selection.set", json!({"range": "B4:F10"}));
     ok &= run(s, "insert.chart", json!({"type": "column", "title": t.tr("Revenue by Region"), "at": "K3", "width": 460, "height": 270}));
     ok &= run(s, "selection.set", json!({"range": "B4:B10"}));
@@ -264,8 +273,8 @@ fn budget(s: &mut Session, t: Text) -> bool {
         json!({"range": "E5:E14", "rule": {"type": "cellIs", "operator": "less", "value": 0, "preset": "lightRedFillDarkRedText"}}),
     );
     ok &= run(s, "home.conditionalFormat", json!({"range": "F5:F14", "rule": {"type": "colorScale", "colors": ["#63BE7B", "#FFEB84", "#F8696B"]}}));
-    ok &= run(s, "home.columnWidth", json!({"cols": "B:B", "width": 130}));
-    ok &= run(s, "home.columnWidth", json!({"cols": "C:E", "width": 90}));
+    ok &= run(s, "home.columnWidth", json!({"cols": "B:B", "width": wide(t, 130)}));
+    ok &= run(s, "home.columnWidth", json!({"cols": "C:E", "width": wide(t, 90)}));
     ok &= run(s, "selection.set", json!({"range": "B4:D14"}));
     ok &= run(s, "insert.chart", json!({"type": "bar", "title": t.tr("Budget vs Actual"), "at": "H3", "width": 440, "height": 300}));
     ok &= run(s, "view.freezePanes", json!({"cell": "A5"}));
@@ -296,7 +305,7 @@ fn grades(s: &mut Session, t: Text) -> bool {
     }
     ok &= run(s, "home.numberFormat", json!({"range": "F2:F9", "code": "0.0"}));
     ok &= run(s, "insert.table", json!({"range": "A1:G9", "style": "TableStyleLight9", "name": "Grades"}));
-    ok &= run(s, "home.columnWidth", json!({"cols": "A:A", "width": 120}));
+    ok &= run(s, "home.columnWidth", json!({"cols": "A:A", "width": wide(t, 120)}));
     ok &= run(
         s,
         "home.conditionalFormat",
@@ -331,6 +340,7 @@ mod tests {
         let at = |a: &str| sheet.value(gridcraft_core::CellRef::parse(a).unwrap_or_else(|| panic!("{a}")));
         assert_eq!(at("C14"), gridcraft_core::Value::text("ონლაინ"));
         assert!(matches!(at("C17"), gridcraft_core::Value::Number(_)), "{:?}", at("C17"));
+        assert_eq!(at("B11"), gridcraft_core::Value::text("ჯამი"), "the total row's label follows the language");
         assert_eq!(title_in("sales", "ka"), "კვარტალური გაყიდვების პანელი");
         assert_eq!(title_in("sales", "uk-UA"), "Quarterly Sales Dashboard");
     }
