@@ -1,6 +1,6 @@
 # Localization parity
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-11 · **Change:** minor (a new function needs only English data; other languages list it as a warning) · **Target:** Microsoft Excel (Microsoft 365), Excel for Mac 16.113.4
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-11 · **Change:** minor (Georgian ka-GE) · **Target:** Microsoft Excel (Microsoft 365), Excel for Mac 16.113.4
 
 Per-language status against Excel, which ships its UI in dozens of languages (Windows language
 packs cover 100+), with localized function names, argument separators, number and date formats,
@@ -58,7 +58,7 @@ right-to-left sheets and full complex-script support. Part of
 | pt-BR | 412 / 501 | 87 | 2 | 1 |
 | pt-PT | 418 / 501 | 82 | 1 | 2 |
 | ru-RU | 459 / 501 | 42 | 0 | 3 |
-| ja-JP, ko-KR, zh-CN, zh-TW | English, as in Excel | 501 | 0 | 0 |
+| ja-JP, ko-KR, zh-CN, zh-TW, ka-GE | English, as in Excel | 501 | 0 | 0 |
 
 "Kept English" counts names Excel spells the same in that language (`LAMBDA`, `PI` and `INFO` in
 German); the unsourced ones are counted separately and also stay English until a source is found.
@@ -84,6 +84,7 @@ Estimates to `full` cover the remaining agent work; native review is a human tas
 | Japanese | ja (ja-JP) | 1,955 / 1,955 (100%) | yes | CJK system-font fallback; IME unverified; no furigana display; PDF can't export | no | interface and formats; English function names, as Excel | 3–5 h |
 | German | de (de-DE) | 1,955 / 1,955 (100%) | yes | Latin: yes | no | interface, function names, formats | review only |
 | Korean | ko (ko-KR) | 1,955 / 1,955 (100%) | yes | Hangul via the CJK fallback; IME unverified; PDF can't export | no | interface and formats; English function names, as Excel | 2–4 h |
+| Georgian | ka (ka-GE) | 1,955 / 1,955 (100%) | yes | Mkhedruli via system fonts; PDF can't export | no | interface, formats (decimal comma, `;` lists) and function help; English function names; native-speaker reviewed | done |
 | Vietnamese | vi | 0 (0%) | no | Latin with stacked diacritics: unverified | no | none | 3–6 h |
 
 Other shipped languages, at the same depth as the Latin rows (Traditional Chinese as the CJK
@@ -116,6 +117,7 @@ needed with English only, about 60% of the work is done; with no native review, 
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-11 | minor | Georgian (ka-GE): interface, function help and regional formats, reviewed string by string by a native speaker; English function names |
 | 2026-10-11 | minor | A new worksheet function needs only English data: other languages spell it like English and show the en-US description until translated, reported as `cargo xtask locales` warnings |
 | 2026-10-10 | major | Re-measured for M12 (#191): 1,955-key Fluent catalog in 12 languages (the ribbon tables of #31, #104, #82 folded in), localized function names and separators, 12 regional formats, localized shortcuts; ~50% ready, 45–65 h |
 | 2026-10-10 | minor | Re-measured after #31, #104, #82, #38 merged: ribbon translated into ja, zh, ko, pt-BR and ru (266–268 labels, ~12%), system-language default, CJK/Thai/Hebrew font fallback; ~10% ready, 100–165 h |
