@@ -1,6 +1,0 @@
-# Keyboard shortcuts of ka-GE. Same format as en-US/keymap.toml.
-#
-# No override: shortcuts use the physical keys, so a Georgian keyboard layout keeps the en-US
-# chords (Ctrl+N/O/S/W, Ctrl+B/I/U, Ctrl+C/X/V/Z/Y …). Every command inherits its en-US chord.
-
-[shortcuts]

@@ -33,43 +33,77 @@ fn find_exact(x: &Value, hay: &[Value], wild: bool, reverse: bool) -> Option<usi
     if reverse { hay.iter().rposition(|v| lookup_equal(x, v, wild)) } else { hay.iter().position(|v| lookup_equal(x, v, wild)) }
 }
 
-/// Binary search over the entries of the needle's type, assuming they are sorted ascending
-/// (`desc = false`) or descending. Returns the position of the last entry that is `<= x`
-/// (ascending) or `>= x` (descending), like Excel's approximate match.
+/// Approximate match of VLOOKUP, HLOOKUP, LOOKUP and MATCH: the position of the largest entry
+/// `<= x` in data sorted ascending (`desc = false`), or of the smallest entry `>= x` in data
+/// sorted descending. Like Excel this is a bisection over the whole vector, so on unsorted data
+/// it answers what Excel answers rather than a linear "best" entry:
+/// - the probe is the middle entry of the remaining window; a probe whose type differs from the
+///   needle (text vs number vs logical, blanks, errors) is replaced by the nearest entry of the
+///   needle's type below it in the window; when there is none the window moves up past it, so
+///   entries of other types are skipped (`LOOKUP(9.9E+307, range)` finds the last number);
+/// - a probe equal to the needle ends the search at once (the run of equal entries that follows
+///   it is taken, so sorted duplicates give the last one).
+///
+/// Observed in Excel: `VLOOKUP(534, {"INTEGRAL";0;1;2;534;9999999999;-9999999999}, …)` finds 534,
+/// `HLOOKUP("STRING", {"INTEGRAL","DOUBLE","BLANK","STRING","REF","AREA (rows)",<blank>}, …)`
+/// finds "STRING" and `LOOKUP("DOUBLE", {"DOUBLE","BLANK","STRING","REF","AREA (rows)"}, …)`
+/// finds "DOUBLE". Work is linear in the vector length at worst.
 fn bsearch_last(x: &Value, hay: &[Value], desc: bool) -> Option<usize> {
-    let idx: Vec<usize> = hay.iter().enumerate().filter(|(_, v)| same_type(x, v)).map(|(i, _)| i).collect();
-    let (mut lo, mut hi) = (0usize, idx.len());
-    // Find the first filtered position where the "passes" predicate fails.
-    while lo < hi {
+    let mut hi = hay.len().checked_sub(1)?;
+    let mut lo = 0usize;
+    let mut best = None;
+    while lo <= hi {
         let mid = lo + (hi - lo) / 2;
-        let v = idx.get(mid).and_then(|&i| hay.get(i))?;
-        let o = compare(v, x);
-        let ok = if desc { o != Ordering::Less } else { o != Ordering::Greater };
-        if ok {
+        let Some(j) = (lo..=mid).rev().find(|&j| hay.get(j).is_some_and(|v| same_type(x, v))) else {
             lo = mid + 1;
-        } else {
-            hi = mid;
-        }
-    }
-    if lo == 0 { None } else { idx.get(lo - 1).copied() }
-}
-
-/// Binary search returning the first entry `>= x` (ascending) or `<= x` (descending).
-fn bsearch_first(x: &Value, hay: &[Value], desc: bool) -> Option<usize> {
-    let idx: Vec<usize> = hay.iter().enumerate().filter(|(_, v)| same_type(x, v)).map(|(i, _)| i).collect();
-    let (mut lo, mut hi) = (0usize, idx.len());
-    while lo < hi {
-        let mid = lo + (hi - lo) / 2;
-        let v = idx.get(mid).and_then(|&i| hay.get(i))?;
+            continue;
+        };
+        let v = hay.get(j)?;
         let o = compare(v, x);
+        if o == Ordering::Equal {
+            let mut k = j;
+            while hay.get(k + 1).is_some_and(|w| same_type(x, w) && compare(w, x) == Ordering::Equal) {
+                k += 1;
+            }
+            return Some(k);
+        }
         let before = if desc { o == Ordering::Greater } else { o == Ordering::Less };
         if before {
+            best = Some(j);
             lo = mid + 1;
+        } else if j == 0 {
+            break;
         } else {
-            hi = mid;
+            hi = j - 1;
         }
     }
-    idx.get(lo).copied()
+    best
+}
+
+/// Order of an entry relative to the needle for XLOOKUP / XMATCH binary search (search mode ±2):
+/// Excel's sort order over all types (numbers < text < logicals < errors), reversed for
+/// descending data, with blanks always last like a sort leaves them. Unlike the legacy
+/// approximate match no entry is skipped (observed: `XLOOKUP(46523, {9700;"xyz";"xyz";160726;
+/// 204100;510300}, …, 0, 1, 2)` returns the row of the first "xyz").
+fn binary_order(v: &Value, x: &Value, desc: bool) -> Ordering {
+    match v {
+        Value::Empty => Ordering::Greater,
+        _ if desc => compare(v, x).reverse(),
+        _ => compare(v, x),
+    }
+}
+
+/// Binary search for the first entry not ordered before the needle (`>= x` ascending, `<= x`
+/// descending).
+fn bsearch_first(x: &Value, hay: &[Value], desc: bool) -> Option<usize> {
+    let p = hay.partition_point(|v| binary_order(v, x, desc) == Ordering::Less);
+    (p < hay.len()).then_some(p)
+}
+
+/// Binary search for the last entry not ordered after the needle (`<= x` ascending, `>= x`
+/// descending).
+fn bsearch_upto(x: &Value, hay: &[Value], desc: bool) -> Option<usize> {
+    hay.partition_point(|v| binary_order(v, x, desc) != Ordering::Greater).checked_sub(1)
 }
 
 /// A 1-D view of an array (row or column), `None` when it is 2-D.
@@ -93,18 +127,18 @@ fn cell_result(v: Value) -> Value {
 // ---------------------------------------------------------------------------------------------
 // VLOOKUP / HLOOKUP / LOOKUP / MATCH
 
-fn vh_lookup(c: &dyn Ctx, args: &[Arg], vertical: bool) -> R<Value> {
+fn vh_lookup(args: &[Arg], vertical: bool) -> R<Value> {
     let x = needle(args, 0)?;
     let table = as_array(&arg(args, 1)?.value);
     if let Value::Error(e) = &arg(args, 1)?.value {
         return Err(*e);
     }
-    let idx = num(c, args, 2)?;
+    let idx = num(args, 2)?;
     if idx < 1.0 {
         return Err(CellError::Value);
     }
     let idx = idx.trunc() as usize - 1;
-    let approx = opt_bool(c, args, 3, true)?;
+    let approx = opt_bool(args, 3, true)?;
     let (keys, len) = if vertical { (column(&table, 0), table.cols) } else { (row(&table, 0), table.rows) };
     if idx >= len {
         return Err(CellError::Ref);
@@ -115,12 +149,12 @@ fn vh_lookup(c: &dyn Ctx, args: &[Arg], vertical: bool) -> R<Value> {
     Ok(cell_result(v.cloned().unwrap_or(Value::Empty)))
 }
 
-fn vlookup(a: &[Arg], c: &mut dyn Ctx) -> R<Value> {
-    vh_lookup(c, a, true)
+fn vlookup(a: &[Arg], _c: &mut dyn Ctx) -> R<Value> {
+    vh_lookup(a, true)
 }
 
-fn hlookup(a: &[Arg], c: &mut dyn Ctx) -> R<Value> {
-    vh_lookup(c, a, false)
+fn hlookup(a: &[Arg], _c: &mut dyn Ctx) -> R<Value> {
+    vh_lookup(a, false)
 }
 
 fn lookup(args: &[Arg], _c: &mut dyn Ctx) -> R<Value> {
@@ -160,14 +194,14 @@ fn lookup(args: &[Arg], _c: &mut dyn Ctx) -> R<Value> {
     }
 }
 
-fn match_fn(args: &[Arg], c: &mut dyn Ctx) -> R<Value> {
+fn match_fn(args: &[Arg], _c: &mut dyn Ctx) -> R<Value> {
     let x = needle(args, 0)?;
     let av = &arg(args, 1)?.value;
     if let Value::Error(e) = av {
         return Err(*e);
     }
     let hay = vector(&as_array(av)).ok_or(CellError::NA)?;
-    let mt = opt_num(c, args, 2, 1.0)?;
+    let mt = opt_num(args, 2, 1.0)?;
     let pos = if mt == 0.0 {
         find_exact(&x, &hay, true, false)
     } else if mt > 0.0 {
@@ -199,12 +233,13 @@ fn xsearch(x: &Value, hay: &[Value], match_mode: i64, search_mode: i64) -> R<Opt
                 if desc {
                     bsearch_first(x, hay, true)
                 } else {
-                    bsearch_last(x, hay, false)
+                    bsearch_upto(x, hay, false)
                 }
             }
+            // Next larger: first >= x (ascending) / last >= x (descending).
             _ => {
                 if desc {
-                    bsearch_last(x, hay, true)
+                    bsearch_upto(x, hay, true)
                 } else {
                     bsearch_first(x, hay, false)
                 }
@@ -248,10 +283,10 @@ fn xsearch(x: &Value, hay: &[Value], match_mode: i64, search_mode: i64) -> R<Opt
 fn bsearch_exact(x: &Value, hay: &[Value], desc: bool) -> Option<usize> {
     let p = bsearch_first(x, hay, desc)?;
     let v = hay.get(p)?;
-    if compare(v, x) == Ordering::Equal { Some(p) } else { None }
+    if binary_order(v, x, desc) == Ordering::Equal { Some(p) } else { None }
 }
 
-fn xlookup(args: &[Arg], c: &mut dyn Ctx) -> R<Value> {
+fn xlookup(args: &[Arg], _c: &mut dyn Ctx) -> R<Value> {
     let x = needle(args, 0)?;
     let lv = &arg(args, 1)?.value;
     if let Value::Error(e) = lv {
@@ -269,8 +304,8 @@ fn xlookup(args: &[Arg], c: &mut dyn Ctx) -> R<Value> {
     if vertical && ra.rows != la.rows || !vertical && ra.cols != la.cols {
         return Err(CellError::Value);
     }
-    let mm = if has(args, 4) { opt_int(c, args, 4, 0)? } else { 0 };
-    let sm = if has(args, 5) { opt_int(c, args, 5, 1)? } else { 1 };
+    let mm = if has(args, 4) { opt_int(args, 4, 0)? } else { 0 };
+    let sm = if has(args, 5) { opt_int(args, 5, 1)? } else { 1 };
     match xsearch(&x, &hay, mm, sm)? {
         Some(p) => {
             if vertical {
@@ -297,30 +332,30 @@ fn xlookup(args: &[Arg], c: &mut dyn Ctx) -> R<Value> {
     }
 }
 
-fn xmatch(args: &[Arg], c: &mut dyn Ctx) -> R<Value> {
+fn xmatch(args: &[Arg], _c: &mut dyn Ctx) -> R<Value> {
     let x = needle(args, 0)?;
     let lv = &arg(args, 1)?.value;
     if let Value::Error(e) = lv {
         return Err(*e);
     }
     let hay = vector(&as_array(lv)).ok_or(CellError::Value)?;
-    let mm = if has(args, 2) { int(c, args, 2)? } else { 0 };
-    let sm = if has(args, 3) { int(c, args, 3)? } else { 1 };
+    let mm = if has(args, 2) { int(args, 2)? } else { 0 };
+    let sm = if has(args, 3) { int(args, 3)? } else { 1 };
     xsearch(&x, &hay, mm, sm)?.map(|p| Value::Number((p + 1) as f64)).ok_or(CellError::NA)
 }
 
 // ---------------------------------------------------------------------------------------------
 // INDEX / ROWS / COLUMNS / TRANSPOSE / ADDRESS
 
-fn index(args: &[Arg], ctx: &mut dyn Ctx) -> R<Value> {
+fn index(args: &[Arg], _c: &mut dyn Ctx) -> R<Value> {
     let av = &arg(args, 0)?.value;
     if let Value::Error(e) = av {
         return Err(*e);
     }
     let a = as_array(av);
-    let r = if has(args, 1) { num(ctx, args, 1)? } else { 0.0 };
-    let c = if has(args, 2) { num(ctx, args, 2)? } else { 0.0 };
-    if has(args, 3) && num(ctx, args, 3)?.trunc() != 1.0 {
+    let r = if has(args, 1) { num(args, 1)? } else { 0.0 };
+    let c = if has(args, 2) { num(args, 2)? } else { 0.0 };
+    if has(args, 3) && num(args, 3)?.trunc() != 1.0 {
         return Err(CellError::Ref);
     }
     if r < 0.0 || c < 0.0 {
@@ -378,17 +413,24 @@ fn transpose(args: &[Arg], _c: &mut dyn Ctx) -> R<Value> {
     }
 }
 
+/// Sheet text for ADDRESS, quoted when it needs to be. A `[Book]Sheet` prefix is judged by its
+/// parts (Microsoft's ADDRESS examples: `"[Book1]Sheet1"` stays bare, `"EXCEL SHEET"` becomes
+/// `'EXCEL SHEET'`).
 fn quote_sheet(s: &str) -> String {
-    let plain =
-        !s.is_empty() && s.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.') && !s.chars().next().is_some_and(|c| c.is_ascii_digit());
+    let word = |p: &str| p.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.');
+    let bare_sheet = |p: &str| !p.is_empty() && word(p) && !p.chars().next().is_some_and(|c| c.is_ascii_digit());
+    let plain = match s.strip_prefix('[').and_then(|r| r.split_once(']')) {
+        Some((book, sheet)) => !book.is_empty() && word(book) && bare_sheet(sheet),
+        None => bare_sheet(s),
+    };
     if plain { s.to_string() } else { format!("'{}'", s.replace('\'', "''")) }
 }
 
-fn address(args: &[Arg], ctx: &mut dyn Ctx) -> R<Value> {
-    let r = num(ctx, args, 0)?.trunc();
-    let c = num(ctx, args, 1)?.trunc();
-    let abs = if has(args, 2) { int(ctx, args, 2)? } else { 1 };
-    let a1 = if has(args, 3) { opt_bool(ctx, args, 3, true)? } else { true };
+fn address(args: &[Arg], _c: &mut dyn Ctx) -> R<Value> {
+    let r = num(args, 0)?.trunc();
+    let c = num(args, 1)?.trunc();
+    let abs = if has(args, 2) { int(args, 2)? } else { 1 };
+    let a1 = if has(args, 3) { opt_bool(args, 3, true)? } else { true };
     if !(1.0..=1_048_576.0).contains(&r) || !(1.0..=16_384.0).contains(&c) || !(1..=4).contains(&abs) {
         return Err(CellError::Value);
     }
@@ -402,13 +444,12 @@ fn address(args: &[Arg], ctx: &mut dyn Ctx) -> R<Value> {
     let cell = if a1 {
         format!("{}{}{}{}", if col_abs { "$" } else { "" }, col_to_letters(ci - 1), if row_abs { "$" } else { "" }, ri)
     } else {
-        let [rl, cl] = ctx.locale().formula.r1c1;
-        let rp = if row_abs { format!("{rl}{ri}") } else { format!("{rl}[{ri}]") };
-        let cp = if col_abs { format!("{cl}{ci}") } else { format!("{cl}[{ci}]") };
+        let rp = if row_abs { format!("R{ri}") } else { format!("R[{ri}]") };
+        let cp = if col_abs { format!("C{ci}") } else { format!("C[{ci}]") };
         format!("{rp}{cp}")
     };
     if has(args, 4) {
-        let sheet = text(ctx, args, 4)?;
+        let sheet = text(args, 4)?;
         if sheet.is_empty() {
             return text_val(format!("!{cell}"));
         }
@@ -575,6 +616,45 @@ mod tests {
         close(ev("LOOKUP", vec![t("zz"), av(mixed), av(row(&[1.0, 2.0, 3.0, 4.0]))]), 4.0);
     }
 
+    /// Approximate matches over unsorted, mixed-type data as observed in Excel
+    /// (FormulaEvalTestData rows "Vlookup", "Hlookup", "Lookup"): Excel bisects the whole
+    /// vector and stops at an equal entry, so answers differ from a "best entry" scan.
+    #[test]
+    fn approximate_match_follows_bisection() {
+        // B6:H12 of the test data: header row, then one row per data kind.
+        let data = arr(vec![
+            vec![tv("INTEGRAL"), tv("DOUBLE"), tv("BLANK"), tv("STRING"), tv("REF"), tv("AREA (rows)"), Value::Empty],
+            vec![nv(0.0), nv(0.0), Value::Empty, tv(""), nv(0.0), nv(1.0), nv(2.0)],
+            vec![nv(1.0), nv(0.00001), Value::Empty, tv("nospaces"), nv(1.0), nv(1.001), nv(2.999)],
+            vec![nv(2.0), nv(1.1), Value::Empty, tv("sp ace s"), nv(9999999999.0), nv(2.3456), nv(3.4567)],
+            vec![nv(534.0), nv(1.00001), Value::Empty, tv("endsWithSpace "), nv(0.00001), tv("alphanum"), nv(3.0)],
+            vec![nv(9999999999.0), nv(2.99999), Value::Empty, tv(" beginsWithSpace"), nv(0.0), tv("blanksIncl"), Value::Empty],
+            vec![nv(-9999999999.0), nv(999999.99999), Value::Empty, tv("non-numeric"), tv("sp ace s"), tv("E8"), nv(545.0)],
+        ]);
+        close(ev("VLOOKUP", vec![n(534.0), rf(data.clone()), n(2.0)]), 1.00001);
+        is_text(ev("VLOOKUP", vec![n(534.0), rf(data.clone()), n(4.0)]), "endsWithSpace ");
+        is_text(ev("VLOOKUP", vec![n(534.0), rf(data.clone()), n(4.0), b(true)]), "endsWithSpace ");
+        is_text(ev("HLOOKUP", vec![t("STRING"), rf(data.clone()), n(6.0), b(true)]), " beginsWithSpace");
+        let keys = arr(vec![vec![tv("DOUBLE"), tv("BLANK"), tv("STRING"), tv("REF"), tv("AREA (rows)")]]);
+        let results = arr(vec![vec![nv(1.1), Value::Empty, tv("sp ace s"), nv(9999999999.0), nv(2.3456)]]);
+        close(ev("LOOKUP", vec![t("DOUBLE"), rf(keys), rf(results)]), 1.1);
+        let b6_b15 = col(&[0.0, 1.0, 2.0, 534.0, 9999999999.0, -9999999999.0, -534.0, -2.0, -1.0]);
+        let mut keys = vec![tv("INTEGRAL")];
+        keys.extend(rows_of(&b6_b15).into_iter().flatten());
+        let words = ["STRING", "", "nospaces", "sp ace s", "endsWithSpace ", " beginsWithSpace", "non-numeric", "0", "0.000001", "1"];
+        let e_col = arr(words.iter().map(|w| vec![tv(w)]).collect());
+        is_text(ev("LOOKUP", vec![n(534.0), rf(arr(keys.into_iter().map(|k| vec![k]).collect())), rf(e_col)]), "endsWithSpace ");
+        // Sorted duplicates give the last one; descending data with MATCH -1 too.
+        close(ev("MATCH", vec![n(2.0), av(row(&[1.0, 2.0, 2.0, 2.0, 3.0])), n(1.0)]), 4.0);
+        close(ev("MATCH", vec![n(20.0), av(row(&[40.0, 20.0, 20.0, 10.0])), n(-1.0)]), 3.0);
+        // Only text and blanks: no number to find.
+        is_err(ev("MATCH", vec![n(5.0), av(arr(vec![vec![tv("a"), Value::Empty, tv("b")]]))]), CellError::NA);
+        // A long run of trailing blanks (whole-column lookups) still finds the last number.
+        let mut tall = vec![vec![nv(1.0)], vec![nv(2.0)], vec![nv(3.0)]];
+        tall.extend((0..10_000).map(|_| vec![Value::Empty]));
+        close(ev("MATCH", vec![n(9.0), rf(arr(tall))]), 3.0);
+    }
+
     #[test]
     fn match_fn() {
         let v = col(&[10.0, 20.0, 30.0, 40.0]);
@@ -633,6 +713,23 @@ mod tests {
         is_err(ev("XLOOKUP", vec![n(2.0), rf(table()), rf(vals)]), CellError::Value);
     }
 
+    /// XLOOKUP binary search (search mode ±2). Observed in Excel (xlookup.xlsx, Sheet2): next
+    /// larger over ascending data with text mixed in (0.22) and over descending data (0.24); the
+    /// bisection compares across types in sort order (numbers < text) instead of skipping text.
+    /// The other modes follow from the same order.
+    #[test]
+    fn xlookup_binary_search_observed() {
+        let rates = col(&[0.1, 0.22, 0.24, 0.32, 0.35, 0.37]);
+        let incomes = arr(vec![vec![nv(9700.0)], vec![tv("xyz")], vec![tv("xyz")], vec![nv(160726.0)], vec![nv(204100.0)], vec![nv(510300.0)]]);
+        close(ev("XLOOKUP", vec![n(46523.0), rf(incomes.clone()), rf(rates.clone()), n(0.0), n(1.0), n(2.0)]), 0.22);
+        close(ev("XLOOKUP", vec![n(46523.0), rf(incomes), rf(rates), n(0.0), n(-1.0), n(2.0)]), 0.1);
+        let desc_incomes = col(&[510300.0, 204100.0, 160726.0, 84200.0, 39475.0, 9700.0]);
+        let desc_rates = col(&[0.37, 0.35, 0.32, 0.24, 0.22, 0.1]);
+        close(ev("XLOOKUP", vec![n(46523.0), rf(desc_incomes.clone()), rf(desc_rates.clone()), n(0.0), n(1.0), n(-2.0)]), 0.24);
+        close(ev("XLOOKUP", vec![n(46523.0), rf(desc_incomes.clone()), rf(desc_rates.clone()), n(0.0), n(-1.0), n(-2.0)]), 0.22);
+        close(ev("XLOOKUP", vec![n(84200.0), rf(desc_incomes), rf(desc_rates), n(0.0), n(0.0), n(-2.0)]), 0.24);
+    }
+
     fn table_rows3() -> Value {
         arr(vec![vec![nv(1.0), tv("one"), nv(10.0)], vec![nv(2.0), tv("two"), nv(20.0)], vec![nv(3.0), tv("three"), nv(30.0)]])
     }
@@ -683,6 +780,17 @@ mod tests {
         is_text(ev("ADDRESS", vec![n(2.0), n(3.0), n(4.0), b(false)]), "R[2]C[3]");
         is_text(ev("ADDRESS", vec![n(1.0), n(1.0), n(1.0), b(true), t("Sheet1")]), "Sheet1!$A$1");
         is_text(ev("ADDRESS", vec![n(1.0), n(1.0), n(1.0), b(true), t("My Sheet")]), "'My Sheet'!$A$1");
+        // Observed in Excel (FormulaEvalTestData) and Microsoft's ADDRESS examples; the last
+        // case follows from the quoting rule for sheet names.
+        let cases: [(f64, f64, f64, bool, &str, &str); 4] = [
+            (2.0, 3.0, 3.0, true, "[Book1]Sheet1", "[Book1]Sheet1!$C2"),
+            (2.0, 3.0, 1.0, false, "[Book1]Sheet1", "[Book1]Sheet1!R2C3"),
+            (2.0, 3.0, 1.0, false, "EXCEL SHEET", "'EXCEL SHEET'!R2C3"),
+            (1.0, 1.0, 1.0, true, "[My Book]Sheet1", "'[My Book]Sheet1'!$A$1"),
+        ];
+        for (r, c, abs, a1, sheet, want) in cases {
+            is_text(ev("ADDRESS", vec![n(r), n(c), n(abs), b(a1), t(sheet)]), want);
+        }
         is_text(ev("ADDRESS", vec![n(1048576.0), n(16384.0)]), "$XFD$1048576");
         is_err(ev("ADDRESS", vec![n(0.0), n(1.0)]), CellError::Value);
         is_err(ev("ADDRESS", vec![n(1.0), n(16385.0)]), CellError::Value);

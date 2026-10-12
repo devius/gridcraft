@@ -122,8 +122,6 @@ pub(crate) struct Section {
     pub fraction: bool,
     pub currency: bool,
     pub fill: bool,
-    /// Locale id from a `[$-409]` tag: month/day names and AM/PM designators follow it.
-    pub lcid: Option<u16>,
 }
 
 /// Splits a code into sections at unquoted, unescaped, unbracketed semicolons.
@@ -242,12 +240,11 @@ struct Raw {
     color: Option<FormatColor>,
     cond: Option<Cond>,
     currency: bool,
-    lcid: Option<u16>,
 }
 
 fn tokenize(src: &str) -> Raw {
     let cs: Vec<char> = src.chars().collect();
-    let mut raw = Raw { toks: Vec::new(), color: None, cond: None, currency: false, lcid: None };
+    let mut raw = Raw { toks: Vec::new(), color: None, cond: None, currency: false };
     let toks = &mut raw.toks;
     let mut i = 0usize;
     while let Some(&c) = cs.get(i) {
@@ -296,7 +293,7 @@ fn tokenize(src: &str) -> Raw {
                 let close = cs.get(i + 1..).and_then(|r| r.iter().position(|&d| d == ']'));
                 if let Some(p) = close {
                     let content: String = cs.get(i + 1..i + 1 + p).unwrap_or(&[]).iter().collect();
-                    bracket(&mut raw_parts(toks, &mut raw.color, &mut raw.cond, &mut raw.currency, &mut raw.lcid), &content);
+                    bracket(&mut raw_parts(toks, &mut raw.color, &mut raw.cond, &mut raw.currency), &content);
                     i += p + 2;
                 } else {
                     push_lit(toks, "[");
@@ -381,17 +378,10 @@ struct RawParts<'a> {
     color: &'a mut Option<FormatColor>,
     cond: &'a mut Option<Cond>,
     currency: &'a mut bool,
-    lcid: &'a mut Option<u16>,
 }
 
-fn raw_parts<'a>(
-    toks: &'a mut Vec<Tok>,
-    color: &'a mut Option<FormatColor>,
-    cond: &'a mut Option<Cond>,
-    currency: &'a mut bool,
-    lcid: &'a mut Option<u16>,
-) -> RawParts<'a> {
-    RawParts { toks, color, cond, currency, lcid }
+fn raw_parts<'a>(toks: &'a mut Vec<Tok>, color: &'a mut Option<FormatColor>, cond: &'a mut Option<Cond>, currency: &'a mut bool) -> RawParts<'a> {
+    RawParts { toks, color, cond, currency }
 }
 
 /// Handles the content of a `[...]` tag.
@@ -412,13 +402,6 @@ fn bracket(p: &mut RawParts<'_>, content: &str) {
         if !sym.is_empty() {
             *p.currency = true;
             push_lit(p.toks, sym);
-        }
-        // `[$-407]`, `[$€-407]`: the hex locale id after the last dash; the high word carries
-        // calendar and numeral flags.
-        if let Some((_, id)) = body.rsplit_once('-')
-            && let Ok(v) = u32::from_str_radix(id.trim(), 16)
-        {
-            *p.lcid = Some((v & 0xFFFF) as u16);
         }
         return;
     }
@@ -442,7 +425,7 @@ fn date_part(t: &Tok) -> Option<DatePart> {
 }
 
 fn analyze(raw: Raw) -> Section {
-    let Raw { mut toks, color, cond, currency, lcid } = raw;
+    let Raw { mut toks, color, cond, currency } = raw;
     let is_date = toks.iter().any(|t| matches!(t, Tok::Date(_)));
     let has_general = toks.iter().any(|t| matches!(t, Tok::General));
     let mut sec = Section {
@@ -459,7 +442,6 @@ fn analyze(raw: Raw) -> Section {
         fraction: false,
         currency,
         fill: toks.iter().any(|t| matches!(t, Tok::Fill(_))),
-        lcid,
     };
     if is_date {
         sec.kind = SecKind::Date;
@@ -573,7 +555,9 @@ fn analyze(raw: Raw) -> Section {
                 }
             }
             Tok::Slash => {
-                let next_ok = matches!(toks.get(i + 1), Some(Tok::Digit(_) | Tok::FixedDenom(_)));
+                // Literal text may sit between the bar and the denominator (`#/ #`, `# ?=/=?`).
+                let next_ok = matches!(toks.get(i + 1), Some(Tok::FixedDenom(_)))
+                    || matches!(toks.get(i + 1..).and_then(|s| s.iter().find(|t| !matches!(t, Tok::Lit(_)))), Some(Tok::Digit(_)));
                 let has_exp = toks.iter().any(|t| matches!(t, Tok::Exp { .. }));
                 if !fraction_slash && seen_digit && next_ok && !seen_point && !has_exp {
                     fraction_slash = true;

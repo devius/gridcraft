@@ -108,7 +108,7 @@ fn cell_arg(s: &Session, p: &Json, key: &str, cmd: &str) -> Result<(usize, CellR
 
 /// A range text (`"A1:C9"`, `"Sheet2!A:C"`) resolved against the workbook. Whole rows/columns
 /// are trimmed to the used range.
-fn parse_range(wb: &Workbook, t: &str, cmd: &str) -> Result<(usize, RangeRef)> {
+pub(crate) fn parse_range(wb: &Workbook, t: &str, cmd: &str) -> Result<(usize, RangeRef)> {
     let (sh, body) = split_sheet(t);
     let si = sheet_named(wb, sh, wb.active_sheet, cmd)?;
     let r = RangeRef::parse(body.trim()).ok_or_else(|| bad(cmd, format!("not a range: `{t}`")))?;
@@ -489,7 +489,7 @@ fn scenario_show(s: &mut Session, p: &Json) -> Result<Json> {
     edit(s, |cx| {
         for (c, v) in cells.iter().zip(sc.values.iter()) {
             let input = super::edit::json_to_input(v);
-            let cell = super::edit::input_to_cell(&input, si, *c, &mut cx.wb, &gridcraft_locale::INVARIANT)?;
+            let cell = super::edit::input_to_cell(&input, si, *c, &mut cx.wb)?;
             let sh = cx.sheet_mut(si)?;
             match cell {
                 Some(cell) => sh.set_cell(*c, cell),

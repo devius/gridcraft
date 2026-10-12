@@ -1,25 +1,20 @@
 //! UI interaction tests: real egui input through the whole app (no GPU needed).
 
 use egui::{Event, Key, Modifiers, PointerButton};
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::Queryable as _;
 use gridcraft_engine::Session;
 use gridcraft_engine::core::{CellRef, Value};
-use gridcraft_ui_egui::l10n::Tr;
 use gridcraft_ui_egui::{SheetApp, grid::Geo};
 use serde_json::json;
 
 fn harness(session: Session) -> egui_kittest::Harness<'static, SheetApp> {
-    harness_with(session, Default::default())
-}
-
-fn harness_with(session: Session, services: gridcraft_ui_egui::Services) -> egui_kittest::Harness<'static, SheetApp> {
     let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1200.0, 800.0)).build_ui_state(
         |ui, app: &mut SheetApp| {
             let ctx = ui.ctx().clone();
             app.logic(&ctx);
             app.ui(ui);
         },
-        SheetApp::new(session, services),
+        SheetApp::new(session, Default::default()),
     );
     h.run_steps(4);
     h
@@ -91,6 +86,21 @@ fn click_cell(h: &mut egui_kittest::Harness<'static, SheetApp>, cell: &str) {
     h.run_steps(2);
 }
 
+fn click_chart(h: &mut egui_kittest::Harness<'static, SheetApp>, id: u32) {
+    let app = h.state();
+    let sheet = app.session.active().unwrap().wb.active().unwrap();
+    let geo = Geo::new(sheet, app.grid.rect.unwrap(), app.view().scroll);
+    let anchor = sheet.charts.iter().find(|chart| chart.id == id).unwrap().anchor;
+    let pos = egui::pos2(geo.x(sheet, anchor.cell.col) + anchor.dx * geo.z, geo.y(sheet, anchor.cell.row) + anchor.dy * geo.z)
+        + egui::vec2(anchor.width, anchor.height) * geo.z / 2.0;
+    h.input_mut().events.extend([
+        Event::PointerMoved(pos),
+        Event::PointerButton { pos, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE },
+        Event::PointerButton { pos, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE },
+    ]);
+    h.run_steps(2);
+}
+
 #[test]
 fn keyboard_navigation_does_not_replay_the_last_pointer_click() {
     let mut h = harness(blank());
@@ -129,6 +139,26 @@ fn space_toggles_the_active_checkbox_without_clicking_the_hovered_cell() {
     assert_eq!(value(&h, "A1"), Value::Bool(true), "the old pointer location must remain unchanged");
     assert_eq!(value(&h, "B1"), Value::Bool(true));
     assert!(h.state().editor.is_none());
+}
+
+#[test]
+fn name_box_enter_goes_to_the_typed_cell_not_the_one_below() {
+    // #247: typing A1 in the Name Box and pressing Enter selected A2; the grid replayed the Enter.
+    let mut h = harness(blank());
+    h.state_mut().session.run("selection.set", json!({"cell": "C5"})).unwrap();
+    h.run_steps(2);
+    h.ctx.memory_mut(|m| m.request_focus(egui::Id::new("gridcraft.name_box")));
+    h.run_steps(2);
+    h.input_mut().events.push(Event::Key { key: Key::A, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::COMMAND });
+    h.input_mut().events.push(Event::Text("A1".into()));
+    h.run_steps(2);
+    key(&mut h, Key::Enter, Modifiers::NONE);
+    h.run_steps(2);
+    assert_eq!(h.state().session.active().unwrap().selection.active, CellRef::new(0, 0));
+    assert!(h.state().name_box.is_none());
+    // The grid has the focus back: a plain Enter there still moves down.
+    key(&mut h, Key::Enter, Modifiers::NONE);
+    assert_eq!(h.state().session.active().unwrap().selection.active, CellRef::new(1, 0));
 }
 
 #[test]
@@ -177,6 +207,24 @@ fn shortcuts_format_and_extend() {
 }
 
 #[test]
+fn delete_key_removes_the_selected_chart() {
+    let mut session = blank();
+    session.execute("range.setValues", json!({"range": "A1:B2", "values": [[1, 2], [3, 4]]})).unwrap();
+    let id = session.execute("insert.chart", json!({"range": "A1:B2", "at": "D2"})).unwrap()["chart"].as_u64().unwrap() as u32;
+    let mut h = harness(session);
+
+    click_cell(&mut h, "C10");
+    click_chart(&mut h, id);
+    assert_eq!(h.state().selected_chart, Some(id));
+
+    key(&mut h, Key::Delete, Modifiers::NONE);
+
+    assert!(h.state().session.active().unwrap().wb.active().unwrap().charts.is_empty());
+    assert_eq!(h.state().selected_chart, None);
+    assert_eq!(value(&h, "A1"), Value::Number(1.0));
+}
+
+#[test]
 fn renders_every_ribbon_tab_without_panicking() {
     let mut s = Session::new();
     s.execute("file.new", json!({"sample": "sales"})).unwrap();
@@ -191,9 +239,10 @@ fn renders_every_ribbon_tab_without_panicking() {
 
 #[test]
 fn language_switch_translates_the_ribbon_and_persists() {
+    use gridcraft_ui_egui::i18n::Language;
     let mut h = harness(blank());
     // English by default whatever the host's locale: only the desktop app reads the system language.
-    assert_eq!(h.state().session.locale().ui.tag, "en-US");
+    assert_eq!(h.state().ui.language, Language::En);
     // The language commands are listed with the other UI commands.
     let ctx = h.ctx.clone();
     let gridcraft_ui_egui::control::Outcome::Done(listed) = gridcraft_ui_egui::control::handle(h.state_mut(), &ctx, "engine.commands", &json!({}))
@@ -204,80 +253,119 @@ fn language_switch_translates_the_ribbon_and_persists() {
     for id in ["app.language.set", "app.language.english", "app.language.japanese"] {
         assert!(ids.contains(&id), "engine.commands lists {id}");
     }
-    for (code, tag, expected) in
-        [("zh", "zh-CN", "数据"), ("ja", "ja-JP", "データ"), ("ko", "ko-KR", "데이터"), ("ru", "ru-RU", "Данные"), ("pt", "pt-BR", "Dados")]
-    {
-        h.state_mut().run("app.language.set", json!({"language": code})).unwrap();
-        h.run_steps(2);
-        assert_eq!(h.state().session.locale().ui.tag, tag);
-        assert_eq!(h.state().l10n.ribbon_tab("Data").unwrap(), expected);
-        let restored: gridcraft_engine::Prefs = serde_json::from_str(&serde_json::to_string(&h.state().session.prefs).unwrap()).unwrap();
-        assert_eq!(restored.ui_language, tag);
+    for (language, expected) in [
+        (Language::Zh, "数据"),
+        (Language::Ja, "データ"),
+        (Language::Ko, "데이터"),
+        (Language::Ru, "Данные"),
+        (Language::PtBr, "Dados"),
+        (Language::De, "Daten"),
+    ] {
+        h.state_mut().run("app.language.set", json!({"language": language.code()})).unwrap();
+        h.run_steps(2); // every locale renders the ribbon without panicking
+        assert_eq!(h.state().ui.language, language);
+        assert_eq!(language.tr("Data"), expected);
+        let restored: gridcraft_ui_egui::UiState = serde_json::from_str(&serde_json::to_string(&h.state().ui).unwrap()).unwrap();
+        assert_eq!(restored.language, language);
     }
+    // Czech spells "Data" as English does, so the Czech table is checked on a label that differs.
+    h.state_mut().run("app.language.set", json!({"language": "cs"})).unwrap();
+    h.run_steps(2);
+    assert_eq!(h.state().ui.language, Language::Cs);
+    assert_eq!(Language::Cs.tr("Formulas"), "Vzorce");
+    let restored: gridcraft_ui_egui::UiState = serde_json::from_str(&serde_json::to_string(&h.state().ui).unwrap()).unwrap();
+    assert_eq!(restored.language, Language::Cs);
     h.state_mut().run("app.language.set", json!({"language": "en"})).unwrap();
-    assert_eq!(h.state().session.locale().ui.tag, "en-US");
+    assert_eq!(h.state().ui.language, Language::En);
 }
 
 #[test]
-fn legacy_ui_language_migrates_once_without_resetting_other_preferences() {
-    let mut app = SheetApp::new(blank(), Default::default());
-    app.session.set_system_locale("de_DE.UTF-8");
-    for (code, tag) in [("pt", "pt-BR"), ("zh", "zh-CN"), ("ja", "ja-JP"), ("ko", "ko-KR"), ("ru", "ru-RU")] {
-        app.session.prefs.ui_language = "system".into();
-        let saved = json!({"language": code, "dark": true});
-        app.ui = serde_json::from_value(saved.clone()).unwrap();
-        assert!(app.migrate_ui_language(&saved));
-        assert_eq!(app.session.prefs.ui_language, tag);
-        assert!(app.ui.dark);
-        assert!(!app.migrate_ui_language(&json!({"language": "ja"})));
-        assert!(serde_json::to_value(&app.ui).unwrap().get("language").is_none());
+fn name_manager_new_and_edit_open_the_name_dialog_and_come_back() {
+    // #238: New… in the Name Manager did nothing (the manager put itself back over the dialog it
+    // had just opened).
+    let mut h = harness(blank());
+    h.state_mut().open_dialog("nameManager", json!({}));
+    h.run_steps(4);
+    h.get_by_label("New…").click();
+    h.run_steps(2);
+    assert_eq!(h.state().dialog.as_ref().map(|d| d.title.as_str()), Some("New Name"));
+    if let Some(d) = h.state_mut().dialog.as_mut() {
+        d.values.insert("name".into(), json!("Total"));
+        d.values.insert("refersTo".into(), json!("=Sheet1!$A$1"));
     }
-    app.session.prefs.ui_language = "system".into();
-    for saved in [json!({"language": "xx", "dark": true}), json!({"language": 7, "dark": true}), json!({"dark": true})] {
-        app.ui = serde_json::from_value(saved.clone()).unwrap();
-        assert!(!app.migrate_ui_language(&saved));
-        assert_eq!(app.session.prefs.ui_language, "system");
-        assert!(app.ui.dark);
+    h.run_steps(1);
+    key(&mut h, Key::Enter, Modifiers::NONE);
+    h.run_steps(2);
+    let names = |h: &egui_kittest::Harness<'static, SheetApp>| {
+        h.state().session.active().unwrap().wb.names.iter().map(|n| n.name.clone()).collect::<Vec<_>>()
+    };
+    assert_eq!(names(&h), ["Total"]);
+    assert_eq!(h.state().dialog.as_ref().map(|d| d.name()), Some("nameManager"), "OK returns to the Name Manager");
+
+    h.get_by_label("Edit…").click();
+    h.run_steps(2);
+    assert_eq!(h.state().dialog.as_ref().map(|d| d.title.as_str()), Some("Edit Name"));
+    if let Some(d) = h.state_mut().dialog.as_mut() {
+        d.values.insert("name".into(), json!("GrandTotal"));
     }
+    h.run_steps(1);
+    key(&mut h, Key::Enter, Modifiers::NONE);
+    h.run_steps(2);
+    assert_eq!(names(&h), ["GrandTotal"], "Edit renames instead of adding a second name");
+    assert_eq!(h.state().dialog.as_ref().map(|d| d.name()), Some("nameManager"));
 }
 
 #[test]
-fn a_saved_language_that_old_builds_detected_keeps_following_the_system() {
-    // Old builds saved their own system detection, English for languages they lacked: on a German
-    // system "en" was never a choice, and German is available now.
-    let mut app = SheetApp::new(blank(), Default::default());
-    for (system, saved, followed) in [("de_DE.UTF-8", "en", "de-DE"), ("ja-JP", "ja", "ja-JP"), ("pt-PT", "pt", "pt-PT")] {
-        app.session.prefs.ui_language = "system".into();
-        app.session.set_system_locale(system);
-        assert!(!app.migrate_ui_language(&json!({"language": saved})));
-        assert_eq!(app.session.prefs.ui_language, "system");
-        assert_eq!(app.session.locale().ui.tag, followed);
-    }
-    // A language other than the detected one was picked by the user: it migrates.
-    app.session.set_system_locale("pt-PT");
-    assert!(app.migrate_ui_language(&json!({"language": "en"})));
-    assert_eq!(app.session.prefs.ui_language, "en-US");
+fn recommended_charts_dialog_inserts_the_chosen_chart() {
+    // #215: Recommended Charts opens a dialog of chart types for the data instead of inserting a
+    // column chart straight away; OK inserts the one picked.
+    let mut s = blank();
+    s.execute("range.setValues", json!({"range": "A1", "values": [["Fruit", "Sales"], ["Apples", 5], ["Pears", 3], ["Plums", 2]]})).unwrap();
+    s.execute("selection.set", json!({"range": "A1:B4"})).unwrap();
+    let mut h = harness(s);
+    h.state_mut().open_dialog("recommendedCharts", json!({}));
+    h.run_steps(4);
+    assert_eq!(h.state().dialog.as_ref().map(|d| d.name()), Some("recommendedCharts"));
+    h.get_by_label("Pie").click();
+    h.run_steps(2);
+    key(&mut h, Key::Enter, Modifiers::NONE);
+    h.run_steps(2);
+    assert!(h.state().dialog.is_none());
+    let kinds: Vec<_> = h.state().session.active().unwrap().wb.active().unwrap().charts.iter().map(|c| c.kind).collect();
+    assert_eq!(kinds, [gridcraft_engine::model::ChartKind::Pie]);
+    assert!(h.state().selected_chart.is_some(), "the new chart is selected");
+
+    // Without numbers there is nothing to recommend: a message, no dialog.
+    h.state_mut().session.run("selection.set", json!({"range": "A1:A4"})).unwrap();
+    h.state_mut().open_dialog("recommendedCharts", json!({}));
+    assert!(h.state().dialog.is_none());
+    assert!(h.state().message.is_some());
 }
 
 #[test]
-fn language_commands_negotiate_tags_and_only_set_interface_preference() {
-    let mut app = SheetApp::new(blank(), Default::default());
-    app.run("app.setLocale", json!({"formulaLanguage": "en-US", "regionalFormat": "de-DE"})).unwrap();
-    app.run("app.language.set", json!({"code": "pt-PT"})).unwrap();
-    assert_eq!(app.session.prefs.ui_language, "pt-PT");
-    assert_eq!(app.session.prefs.formula_language, "en-US");
-    assert_eq!(app.session.prefs.regional_format, "de-DE");
-    app.run("app.language.set", json!({"language": "de-AT"})).unwrap();
-    assert_eq!(app.session.prefs.ui_language, "de-DE");
-    assert!(app.run("app.language.set", json!({})).is_err());
-    let error = app.run("app.language.set", json!({"language": "xx"})).unwrap_err();
-    for language in gridcraft_locale::LANGUAGES {
-        assert!(error.contains(language.tag));
-    }
-    app.run("app.language.japanese", json!({})).unwrap();
-    assert_eq!(app.session.prefs.ui_language, "ja-JP");
-    app.run("app.language.english", json!({})).unwrap();
-    assert_eq!(app.session.prefs.ui_language, "en-US");
+fn select_data_dialog_sets_the_category_axis_labels() {
+    // #287: Chart Design › Select Data edits the Horizontal (Category) Axis Labels and removes the
+    // series the X values were plotted as.
+    let mut s = blank();
+    s.execute("range.setValues", json!({"range": "A1", "values": [["Year", "Sales"], [2020, 5], [2021, 7], [2022, 9]]})).unwrap();
+    let id = s.execute("insert.chart", json!({"range": "A1:B4", "type": "line"})).unwrap()["chart"].as_u64().unwrap();
+    let mut h = harness(s);
+    h.state_mut().selected_chart = Some(id as u32);
+    h.state_mut().open_dialog("selectData", json!({"chart": id}));
+    h.run_steps(2);
+    let d = h.state_mut().dialog.as_mut().unwrap();
+    assert_eq!(d.title, "Select Data Source");
+    assert_eq!(d.values["names"], json!(["Year", "Sales"]));
+    d.values.insert("categories".into(), json!("=A2:A4"));
+    d.values.insert("remove".into(), json!([0]));
+    h.run_steps(1);
+    key(&mut h, Key::Enter, Modifiers::NONE);
+    h.run_steps(2);
+    assert!(h.state().dialog.is_none());
+    let chart = h.state().session.active().unwrap().wb.active().unwrap().charts[0].clone();
+    assert_eq!(chart.series.len(), 1);
+    assert_eq!(chart.series[0].categories.as_deref(), Some("Sheet1!$A$2:$A$4"));
+    assert_eq!(chart.series[0].values, "Sheet1!$B$2:$B$4");
 }
 
 #[test]
@@ -294,8 +382,11 @@ fn dialogs_open_and_close() {
         "commandSearch",
         "spelling",
         "goTo",
+        "pivotCalculatedField",
         "about",
-        "options",
+        "macros",
+        "analysisToolPak",
+        "solver",
     ] {
         h.state_mut().open_dialog(name, json!({}));
         h.run_steps(2);
@@ -303,6 +394,70 @@ fn dialogs_open_and_close() {
         h.state_mut().dialog = None;
         h.state_mut().message = None;
     }
+}
+
+#[test]
+fn data_analysis_dialog_runs_a_tool_and_asks_before_overwriting() {
+    let mut s = blank();
+    s.execute("range.setValues", json!({"range": "A1", "values": [[1], [2], [3], [4], [5]]})).unwrap();
+    let mut h = harness(s);
+    h.state_mut().open_dialog("analysisToolPak", json!({}));
+    h.state_mut().dialog.as_mut().unwrap().values.insert("pick".into(), json!("descriptive"));
+    h.run_steps(2);
+    key(&mut h, Key::Enter, Modifiers::NONE);
+    assert_eq!(h.state().dialog.as_ref().map(|d| d.title.clone()).as_deref(), Some("Descriptive Statistics"));
+    let fill = |h: &mut egui_kittest::Harness<'static, SheetApp>| {
+        let d = h.state_mut().dialog.as_mut().unwrap();
+        d.values.insert("range".into(), json!("A1:A5"));
+        d.values.insert("outputTo".into(), json!("range"));
+        d.values.insert("output".into(), json!("C1"));
+    };
+    fill(&mut h);
+    h.run_steps(2);
+    key(&mut h, Key::Enter, Modifiers::NONE);
+    assert!(h.state().dialog.is_none(), "OK runs the tool and closes the dialog");
+    assert_eq!(value(&h, "C3"), Value::from("Mean"));
+    assert_eq!(value(&h, "D3"), Value::Number(3.0));
+    // A second report into the same cells asks before replacing them (opened with a tool, the
+    // dialog starts at that tool's form).
+    h.state_mut().open_dialog("analysisToolPak", json!({"tool": "descriptive"}));
+    fill(&mut h);
+    h.run_steps(2);
+    key(&mut h, Key::Enter, Modifiers::NONE);
+    let d = h.state().dialog.as_ref().expect("the dialog stays open to ask");
+    assert_eq!(d.values.get("askOverwrite"), Some(&json!(true)));
+    assert!(h.state().message.is_none());
+}
+
+#[test]
+fn solver_dialog_loads_the_saved_model_and_results_can_restore() {
+    let mut s = blank();
+    for (c, v) in [("A1", "0"), ("A2", "0"), ("B1", "=3*A1+5*A2"), ("B2", "=2*A2"), ("B3", "=3*A1+2*A2")] {
+        s.execute("cell.set", json!({"cell": c, "input": v})).unwrap();
+    }
+    let r = s
+        .execute(
+            "data.solver",
+            json!({"objective": "B1", "variables": "A1:A2", "constraints": ["A1 <= 4", "B2 <= 12", "B3 <= 18"], "method": "simplex"}),
+        )
+        .unwrap();
+    assert_eq!(s.active().unwrap().wb.active().unwrap().value(CellRef::parse("B1").unwrap()), Value::Number(36.0));
+    let mut h = harness(s);
+    h.state_mut().open_dialog("solver", json!({}));
+    h.run_steps(2);
+    let d = h.state().dialog.as_ref().unwrap();
+    assert_eq!(d.values.get("objective"), Some(&json!("B1")));
+    assert_eq!(d.values.get("method"), Some(&json!("simplex")));
+    assert_eq!(d.values.get("constraints").and_then(|c| c.as_array()).map(Vec::len), Some(3));
+    h.state_mut().dialog = None;
+    // Solver Results › Restore Original Values undoes the solution.
+    h.state_mut().open_dialog("solverResults", r);
+    h.state_mut().dialog.as_mut().unwrap().values.insert("restore".into(), json!(true));
+    h.run_steps(2);
+    key(&mut h, Key::Enter, Modifiers::NONE);
+    assert!(h.state().dialog.is_none());
+    assert_eq!(value(&h, "A1"), Value::Number(0.0));
+    assert_eq!(value(&h, "B1"), Value::Number(0.0));
 }
 
 #[test]
@@ -330,403 +485,88 @@ fn column_autocomplete_completes_on_enter() {
     assert_eq!(value(&h, "A5"), Value::from("Ea"));
 }
 
+/// An .xlsm carrying a VBA project, saved to bytes.
+fn macro_workbook_bytes() -> Vec<u8> {
+    let mut wb = gridcraft_engine::model::Workbook::new();
+    wb.vba_project = Some(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1 fake OLE2 vbaProject".to_vec());
+    gridcraft_engine::io::save_bytes(&wb, "macros.xlsm").unwrap()
+}
+
 #[test]
-fn typing_follows_the_regional_format() {
+fn opening_a_macro_workbook_shows_a_notice() {
+    // The reader's "macros kept but not executed" warning must reach a dismissible info bar,
+    // not be silently dropped (issue #6 follow-up: Excel-style message bar).
     let mut h = harness(blank());
-    h.state_mut().session.execute("app.setLocale", json!({"regionalFormat": "pt-BR"})).unwrap();
-    h.run_steps(2);
-    text(&mut h, "1,5");
-    key(&mut h, Key::Enter, Modifiers::NONE);
-    assert_eq!(value(&h, "A1"), Value::Number(1.5));
-    text(&mut h, "=SUM(1,5;2)");
-    key(&mut h, Key::Enter, Modifiers::NONE);
-    assert_eq!(value(&h, "A2"), Value::Number(3.5));
-    // The formula is stored canonically and shown in the region's spelling.
-    let cell = h.state_mut().session.run("cell.get", json!({"cell": "A2"})).unwrap();
-    assert_eq!(cell["formula"], json!("=SUM(1.5,2)"));
-    assert_eq!(cell["formulaLocal"], json!("=SUM(1,5;2)"));
-}
-
-#[test]
-fn options_dialog_applies_the_region_at_once() {
-    let mut h = harness(blank());
-    h.state_mut().open_dialog("options", json!({}));
-    h.run_steps(2);
-    h.state_mut().dialog.as_mut().unwrap().values.insert("regionalFormat".into(), json!("de-DE"));
-    h.state_mut().dialog.as_mut().unwrap().values.insert("useSystemSeparators".into(), json!(true));
-    let app = h.state_mut();
-    let d = app.dialog.take().unwrap();
-    gridcraft_ui_egui::options::apply(app, &d).unwrap();
-    assert_eq!(app.session.locale().regional.tag, "de-DE");
-    assert_eq!(app.session.locale().regional.decimal, ',');
-}
-
-#[test]
-fn today_shortcut_inserts_a_date_in_the_short_format() {
-    let mut h = harness(blank());
-    key(&mut h, Key::Semicolon, Modifiers::COMMAND);
-    assert!(h.state().editor.is_some());
-    let text = h.state().editor.as_ref().map(|e| e.text.clone()).unwrap_or_default();
-    assert!(text.contains('/'), "{text}");
-}
-
-/// Switches the session to German interface, formulas and region.
-fn german(h: &mut egui_kittest::Harness<'static, SheetApp>) {
-    h.state_mut().session.execute("app.setLocale", json!({"uiLanguage": "de-DE", "regionalFormat": "de-DE"})).unwrap();
-    h.run_steps(2);
-}
-
-#[test]
-fn quick_dialogs_send_what_was_typed_as_local_text() {
-    let mut h = harness(blank());
-    german(&mut h);
-    let app = h.state_mut();
-
-    app.open_dialog("defineName", json!({}));
-    let mut d = app.dialog.take().unwrap();
-    d.values.insert("name".into(), json!("Satz"));
-    d.values.insert("refersTo".into(), json!("=SUMME(1,5;2)"));
-    let params = gridcraft_ui_egui::dialogs::build_params(&d, app).unwrap();
-    assert_eq!(params["refersToLocal"], json!("=SUMME(1,5;2)"));
-    assert!(params.get("refersTo").is_none(), "{params}");
-    app.run_typed(d.command.unwrap(), params).unwrap();
-    let stored = app.session.active().unwrap().wb.names.iter().find(|n| n.name == "Satz").map(|n| n.formula.clone());
-    assert_eq!(stored.as_deref().map(|f| f.trim_start_matches('=')), Some("SUM(1.5,2)"));
-
-    app.open_dialog("dataValidation", json!({}));
-    let mut d = app.dialog.take().unwrap();
-    d.values.insert("type".into(), json!("decimal"));
-    d.values.insert("operator".into(), json!("greater"));
-    d.values.insert("formula1".into(), json!("1,5"));
-    d.values.insert("formula2".into(), json!(""));
-    let params = gridcraft_ui_egui::dialogs::build_params(&d, app).unwrap();
-    assert_eq!(params["formula1Local"], json!("1,5"));
-    assert!(params.get("formula1").is_none() && params.get("formula2Local").is_none(), "{params}");
-    app.run_typed(d.command.unwrap(), params).unwrap();
-    let f1 = app.session.active().and_then(|d| d.wb.active().and_then(|s| s.validations.first().map(|v| v.f1.clone())));
-    assert_eq!(f1.as_deref(), Some("1.5"));
-
-    app.open_dialog("cfQuick", json!({"type": "cellIs", "operator": "greater"}));
-    let mut d = app.dialog.take().unwrap();
-    d.values.insert("value".into(), json!("1,5"));
-    let params = gridcraft_ui_egui::dialogs::build_params(&d, app).unwrap();
-    assert_eq!(params["rule"]["valueLocal"], json!("1,5"));
-    assert!(params["rule"].get("value").is_none(), "{params}");
-    app.run_typed(d.command.unwrap(), params).unwrap();
-    let rule = app.session.active().and_then(|d| d.wb.active().and_then(|s| s.cond_formats.first().map(|c| format!("{:?}", c.rule))));
-    assert!(rule.is_some_and(|r| r.contains("1.5")));
-}
-
-#[test]
-fn series_stop_is_read_in_the_region_and_bad_numbers_are_reported() {
-    let mut h = harness(blank());
-    german(&mut h);
-    let app = h.state_mut();
-    app.open_dialog("series", json!({}));
-    let mut d = app.dialog.take().unwrap();
-    d.values.insert("stop".into(), json!("1.000,5"));
-    let params = gridcraft_ui_egui::dialogs::build_params(&d, app).unwrap();
-    assert_eq!(params["stop"], json!(1000.5));
-    d.values.insert("stop".into(), json!("abc"));
-    let error = gridcraft_ui_egui::dialogs::build_params(&d, app).unwrap_err();
-    assert!(error.contains("abc"), "{error}");
-    d.values.insert("stop".into(), json!(""));
-    let params = gridcraft_ui_egui::dialogs::build_params(&d, app).unwrap();
-    assert!(params.get("stop").is_none(), "{params}");
-}
-
-#[test]
-fn region_numbers_are_not_completed_from_the_column() {
-    let mut s = blank();
-    s.execute("range.setValues", json!({"range": "A1", "values": [["1,5 kg"], ["Osten"]]})).unwrap();
-    s.execute("selection.set", json!({"cell": "A3"})).unwrap();
-    let mut h = harness(s);
-    german(&mut h);
-    text(&mut h, "1,5");
-    assert!(h.state().editor.as_ref().is_some_and(|e| e.completion.is_none()), "numbers are never completed");
-    key(&mut h, Key::Enter, Modifiers::NONE);
-    assert_eq!(value(&h, "A3"), Value::Number(1.5));
-    text(&mut h, "Ost");
-    key(&mut h, Key::Enter, Modifiers::NONE);
-    assert_eq!(value(&h, "A4"), Value::from("Osten"));
-}
-
-#[test]
-fn number_helpers_and_filter_blanks_follow_the_region() {
-    let mut s = blank();
-    s.execute("range.setValues", json!({"range": "A1", "values": [["Kopf"], ["x"], [""], ["y"]]})).unwrap();
-    s.execute("data.filter", json!({"range": "A1:A4"})).unwrap();
-    let mut h = harness(s);
-    german(&mut h);
-    assert_eq!(h.state().localize_decimal("12.50"), "12,50");
-    assert_eq!(h.state().number_text(2.5), "2,5");
-    assert_eq!(h.state().parse_number("1.000,5"), Some(1000.5));
-    assert_eq!(h.state().parse_number("1.5x"), None);
-    // Number boxes (sizes, widths) read plain numbers; text fields read like a cell, so a date
-    // series takes a date as its stop value.
-    let boxes = h.state().number_style();
-    assert_eq!(boxes.parse("1.000,5"), Some(1000.5));
-    for text in ["1/2", "10:30", "1.2.2026"] {
-        assert_eq!(boxes.parse(text), None, "{text}");
-    }
-    assert!(h.state().parse_number("1.2.2026").is_some_and(|n| n > 40_000.0));
-    // The filter menu hides the engine's "(Blanks)" row behind the interface language's word.
-    let wb = h.state().session.active().unwrap().wb.clone();
-    let values = gridcraft_engine::cmd::data::filter_values(&wb, 0, 0);
-    assert!(values.iter().any(|(label, _)| label == "(Leere)"), "{values:?}");
-}
-
-#[test]
-fn formula_checkers_show_the_formula_language() {
-    let mut s = blank();
-    s.execute("range.setValues", json!({"range": "A1", "values": [["=SUM(1.5,2)/0"]]})).unwrap();
-    let mut h = harness(s);
-    german(&mut h);
-    let report = h.state_mut().session.run("formulas.errorChecking", json!({})).unwrap();
-    let shown = gridcraft_ui_egui::dialogs::local_view(&report);
-    assert_eq!(shown["errors"][0]["formula"], json!("=SUMME(1,5;2)/0"), "{shown}");
-    assert_eq!(shown["errors"][0]["error"], report["errors"][0]["errorLocal"]);
-    assert!(shown["errors"][0].get("formulaLocal").is_none(), "{shown}");
-    // The Evaluate Formula steps read the same way.
-    let steps = h.state_mut().session.run("formulas.evaluateFormula", json!({"cell": "A1"})).unwrap();
-    let shown = gridcraft_ui_egui::dialogs::local_view(&steps);
-    assert_eq!(shown["formula"], json!("=SUMME(1,5;2)/0"), "{shown}");
+    let b64 = gridcraft_engine::io::base64_encode(&macro_workbook_bytes());
+    let res = h.state_mut().session.run("file.open", json!({"name": "macros.xlsm", "base64": b64})).unwrap();
     assert!(
-        shown["steps"].as_array().is_some_and(|s| s.iter().any(|st| st["expression"] == json!("SUMME(1,5;2)") && st["value"] == json!("3,5"))),
-        "{shown}"
+        res.get("warnings").and_then(|w| w.as_array()).is_some_and(|a| a.iter().any(|m| m.as_str().is_some_and(|s| s.contains("macros")))),
+        "engine reports the macro warning: {res}"
     );
+    // The UI-side handler turns that open result into the notice (open_path does this in the app).
+    h.state_mut().show_open_warnings(&res);
+    let n = h.state().notice.clone().expect("a notice was shown");
+    assert!(n.text.contains("VBA"), "{}", n.text);
+    assert_eq!(n.kind, gridcraft_ui_egui::NoticeKind::Warning);
+    assert_eq!(n.action.as_ref().map(|a| a.1.as_str()), Some("macros"), "action opens the Macros dialog");
+
+    // The notice bar renders without panic; `ui.notice` surfaces it; dismissing clears it.
+    h.run_steps(2);
+    let got = h.state_mut().run("ui.notice", json!({})).unwrap();
+    assert_eq!(got.get("kind").and_then(|k| k.as_str()), Some("warning"));
+    h.state_mut().run("ui.notice.dismiss", json!({})).unwrap();
+    h.run_steps(2);
+    assert!(h.state().notice.is_none());
 }
 
 #[test]
-fn the_options_dialog_knows_the_system_region_whatever_is_stored() {
+fn plain_open_warning_becomes_an_info_notice() {
     let mut h = harness(blank());
-    h.state_mut().session.set_system_locale("de_DE.UTF-8");
-    h.state_mut().session.execute("app.setLocale", json!({"regionalFormat": "en-US"})).unwrap();
-    h.state_mut().open_dialog("options", json!({}));
-    let d = h.state().dialog.as_ref().unwrap();
-    assert_eq!(d.values["regionalFormat"], json!("en-US"));
-    assert_eq!(d.values["systemRegion"], json!("de-DE"));
-    // The fields start with the stored region's separators.
-    assert_eq!((d.values["decimalSeparator"].clone(), d.values["thousandsSeparator"].clone()), (json!("."), json!(",")));
+    h.state_mut().show_open_warnings(&json!({"warnings": ["links to external workbooks are not supported"]}));
+    let n = h.state().notice.clone().unwrap();
+    assert_eq!(n.kind, gridcraft_ui_egui::NoticeKind::Info);
+    assert!(n.action.is_none());
+    assert!(n.text.contains("external"));
+    // No warnings → no notice, no panic.
+    h.state_mut().show_open_warnings(&json!({"warnings": []}));
+    assert!(h.state().notice.is_none());
 }
 
 #[test]
-fn engine_prefills_are_spelled_once() {
-    let mut h = harness(blank());
-    h.state_mut().session.execute("app.setLocale", json!({"uiLanguage": "fr-FR", "regionalFormat": "fr-FR"})).unwrap();
-    h.run_steps(2);
-    // French spells MIRR `TRIM` and VARP `VAR.P`: translating the engine's text again would
-    // turn `TRIM` into `SUPPRESPACE` (the French name of TRIM).
-    for (name, expected) in [("MIRR", "=TRIM("), ("VARP", "=VAR.P("), ("TRIM", "=SUPPRESPACE(")] {
-        h.state_mut().run_or_alert("formulas.insertFunction", json!({"name": name}));
-        let shown = h.state().editor.as_ref().map(|e| e.text.clone());
-        assert_eq!(shown.as_deref(), Some(expected), "{name}");
-        h.state_mut().editor = None;
-    }
-}
-
-#[test]
-fn switching_the_language_rebuilds_texts_and_shortcuts() {
-    let mut h = harness(blank());
-    assert_eq!(h.state().l10n.tag(), "en-US");
-    h.state_mut().run_or_alert("app.setLocale", json!({"uiLanguage": "pt-BR"}));
-    h.run_steps(2);
-    assert_eq!(h.state().l10n.tag(), "pt-BR");
-    // Portuguese Excel binds Bold to Ctrl+N (and Save to Ctrl+B); English binds Ctrl+N to New.
-    key(&mut h, Key::N, Modifiers::COMMAND);
-    let bold = h.state_mut().session.run("cell.get", json!({"cell": "A1"})).unwrap()["style"]["font"]["bold"].clone();
-    assert_eq!(bold, json!(true));
-    h.state_mut().run_or_alert("app.setLocale", json!({"uiLanguage": "en-US"}));
-    h.run_steps(2);
-    assert_eq!(h.state().l10n.tag(), "en-US");
-}
-
-#[test]
-fn options_dialog_applies_custom_separators_and_keeps_invalid_ones_open() {
-    let mut h = harness(blank());
-    h.state_mut().open_dialog("options", json!({}));
-    h.run_steps(2);
-    {
-        let d = h.state_mut().dialog.as_mut().unwrap();
-        d.values.insert("useSystemSeparators".into(), json!(false));
-        d.values.insert("decimalSeparator".into(), json!(","));
-        d.values.insert("thousandsSeparator".into(), json!(","));
-    }
-    h.run_steps(2);
-    h.get_by_label_contains("OK").click();
-    h.run_steps(3);
-    assert!(h.state().dialog.as_ref().is_some_and(|d| d.name == "options"), "an invalid pair keeps the dialog open");
-    assert!(h.state().message.is_some(), "and says why");
-    assert!(h.state().session.prefs.use_system_separators, "nothing was applied");
-
-    h.state_mut().message = None;
-    h.state_mut().dialog.as_mut().unwrap().values.insert("thousandsSeparator".into(), json!("."));
-    h.run_steps(2);
-    h.get_by_label_contains("OK").click();
-    h.run_steps(3);
-    assert!(h.state().dialog.is_none());
-    let prefs = &h.state().session.prefs;
-    assert!(!prefs.use_system_separators);
-    assert_eq!((prefs.decimal_separator.as_str(), prefs.thousands_separator.as_str()), (",", "."));
-    assert_eq!(h.state().session.locale().regional.decimal, ',');
-}
-
-#[test]
-fn the_options_dialog_asks_for_the_cjk_fonts() {
-    let mut h = harness(blank());
-    h.run_steps(2);
-    assert!(h.state().dialog.is_none());
-    h.state_mut().open_dialog("options", json!({}));
-    h.run_steps(2);
-    // The language list shows native names such as 日本語.
-    assert!(h.state().dialog.as_ref().is_some_and(|d| d.name == "options"));
-    let needs = h.state_mut().font_needs();
-    assert!(needs.cjk);
-}
-
-#[test]
-fn the_font_set_is_stable_across_opening_and_closing_the_options_dialog() {
-    let mut h = harness(blank());
-    h.run_steps(2);
-    let before = h.state_mut().font_needs().key();
-    assert!(before.0.is_none(), "{before:?}: no CJK needed yet");
-    h.state_mut().open_dialog("options", json!({}));
-    h.run_steps(2);
-    let open = h.state_mut().font_needs().key();
-    assert!(open.0.is_some());
-    h.state_mut().dialog = None;
-    h.run_steps(2);
-    assert_eq!(h.state_mut().font_needs().key(), open, "closing the dialog must not rebuild the fonts again");
-}
-
-#[test]
-fn the_language_picker_asks_for_the_cjk_fonts_when_it_opens() {
-    let mut h = harness(blank());
-    h.state_mut().ui.ribbon_tab = "View".into();
-    h.run_steps(2);
-    assert!(!h.state_mut().font_needs().cjk, "a closed picker shows only the current language");
-    h.get_by_value("English (United States)").click();
-    h.run_steps(2);
-    assert!(h.state_mut().font_needs().cjk, "the open list shows 日本語, 中文 and 한국어");
-}
-
-#[test]
-fn a_downloaded_font_that_is_not_a_font_is_dropped_once() {
-    // Static hosts answer a missing `fonts/cjk-ja.ttf` with their HTML page (status 200); egui
-    // panics on font data it cannot parse.
-    let inbox: gridcraft_ui_egui::Inbox = Default::default();
-    let requested = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
-    let (fetch_inbox, fetch_requested) = (inbox.clone(), requested.clone());
-    let services = gridcraft_ui_egui::Services {
-        fetch_font: Some(Box::new(move |name: &str| {
-            fetch_requested.borrow_mut().push(name.to_string());
-            fetch_inbox.lock().unwrap().push((name.to_string(), b"<!doctype html><html><body>app</body></html>".to_vec()));
-        })),
-        font_inbox: Some(inbox),
-        ..Default::default()
-    };
-    let mut h = harness_with(blank(), services);
-    h.state_mut().run("app.language.set", json!({"language": "ja"})).unwrap();
-    h.run_steps(4);
-    assert!(h.state_mut().font_needs().downloaded.is_empty());
-    assert_eq!(*requested.borrow(), ["cjk-ja.ttf"], "a failed download is not requested again every frame");
-}
-
-#[test]
-fn the_name_scope_is_a_drop_down_with_the_localized_workbook() {
-    let mut h = harness(blank());
-    german(&mut h);
-    let app = h.state_mut();
-    app.open_dialog("defineName", json!({}));
-    let mut d = app.dialog.take().unwrap();
-    let options = d
-        .fields
-        .iter()
-        .find_map(|f| match f {
-            gridcraft_ui_egui::dialogs::Field::Combo { key: "scope", options, .. } => Some(options.clone()),
-            _ => None,
-        })
-        .expect("scope is a drop-down");
-    assert_eq!(options[0], ("Workbook".to_string(), app.l10n.tr("Workbook").into_owned()));
-    let sheet = app.session.active().and_then(|d| d.wb.active().map(|s| s.name.clone())).unwrap();
-    assert!(options.iter().any(|(value, shown)| *value == sheet && *shown == sheet), "{options:?}");
-    d.values.insert("name".into(), json!("Satz"));
-    d.values.insert("refersTo".into(), json!("=1"));
-    d.values.insert("scope".into(), json!("Workbook"));
-    let params = gridcraft_ui_egui::dialogs::build_params(&d, app).unwrap();
-    assert!(params.get("scope").is_none(), "the workbook scope is the default: {params}");
-    d.values.insert("scope".into(), json!(sheet.clone()));
-    let params = gridcraft_ui_egui::dialogs::build_params(&d, app).unwrap();
-    assert_eq!(params["scope"], json!(sheet));
-}
-
-#[test]
-fn name_values_are_spelled_in_the_region() {
-    let mut h = harness(blank());
-    german(&mut h);
-    let loc = h.state().session.locale();
-    let text = |v| gridcraft_ui_egui::dialogs::value_text(&loc, &v);
-    assert_eq!(text(json!(1.5)), "1,5");
-    assert_eq!(text(json!("x")), "x");
-    assert_eq!(text(json!(true)), loc.formula.bool_true);
-    assert_ne!(text(json!(true)), "TRUE");
-    assert_eq!(text(json!({"error": "#N/A"})), loc.formula.local_error("#N/A"));
-    let (col, row) = (loc.regional.array_col, loc.regional.array_row);
-    assert_eq!(text(json!([[1.5, 2], [3, 4]])), format!("{{1,5{col}2{row}3{col}4}}"));
-}
-
-#[test]
-fn the_formula_being_edited_follows_a_language_switch() {
-    let mut h = harness(blank());
-    german(&mut h);
-    h.state_mut().begin_edit(Some("=SUMME(1,5;2)".into()), false);
-    h.run_steps(2);
-    h.state_mut().run_or_alert("app.setLocale", json!({"uiLanguage": "en-US", "regionalFormat": "en-US"}));
-    h.run_steps(2);
-    let ed = h.state().editor.as_ref().expect("the edit stays open");
-    assert_eq!(ed.text, "=SUM(1.5,2)");
-    assert_eq!(ed.caret, ed.text.chars().count());
-}
-
-#[test]
-fn a_language_switch_closes_the_filter_menu_and_forgets_its_check_boxes() {
-    let mut h = harness(blank());
-    h.state_mut().grid.filter_checks = Some((0, vec![("a".into(), false)]));
-    h.state_mut().grid.close_filter_menu();
-    assert!(h.state().grid.filter_checks.is_none());
-    h.state_mut().grid.filter_checks = Some((0, vec![("a".into(), false)]));
-    h.state_mut().run_or_alert("app.setLocale", json!({"uiLanguage": "pt-BR"}));
-    h.run_steps(2);
-    assert!(h.state().grid.filter_checks.is_none());
-}
-
-#[test]
-fn the_pick_list_offers_what_is_typed_in_the_region() {
+fn macros_dialog_lists_vba_and_scripts() {
     let mut s = blank();
-    s.execute("range.setValues", json!({"range": "A1", "values": [[1.5], ["x"], [1.5]]})).unwrap();
-    s.execute("selection.set", json!({"cell": "A4"})).unwrap();
+    let mut wb = gridcraft_engine::model::Workbook::new();
+    wb.vba_project = Some(vec![0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
+    s.active_mut().unwrap().wb = std::sync::Arc::new(wb);
     let mut h = harness(s);
-    german(&mut h);
-    assert_eq!(gridcraft_ui_egui::dialogs::pick_list_items(h.state()), vec!["1,5".to_string(), "x".to_string()]);
+    h.state_mut().open_dialog("macros", json!({}));
+    h.run_steps(3);
+    let d = h.state().dialog.as_ref().expect("macros dialog open");
+    assert_eq!(d.name(), "macros");
+    let items = d.result.as_ref().and_then(|r| r.as_array()).cloned().unwrap_or_default();
+    assert!(items.iter().any(|i| i.get("kind").and_then(|k| k.as_str()) == Some("vba")), "{items:?}");
+    h.state_mut().dialog = None;
 }
 
 #[test]
-fn the_undo_list_shows_command_labels_in_the_interface_language() {
-    use gridcraft_engine::command_specs;
-    let mut h = harness(blank());
-    h.state_mut().run_or_alert("app.setLocale", json!({"uiLanguage": "de-DE"}));
+fn status_bar_shows_macro_badge() {
+    let mut s = blank();
+    let mut wb = gridcraft_engine::model::Workbook::new();
+    wb.vba_project = Some(vec![0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
+    s.active_mut().unwrap().wb = std::sync::Arc::new(wb);
+    // Rendering the status bar must not panic with a VBA project present.
+    let mut h = harness(s);
+    h.run_steps(3);
+    h.state_mut().ui.dark = true;
     h.run_steps(2);
-    assert_eq!(h.state().l10n.tag(), "de-DE");
-    let l = h.state().l10n;
-    let specs = command_specs();
-    let unique = |label: &str| specs.iter().filter(|s| s.label.trim_end_matches('…') == label).count() == 1;
-    let (english, shown) = specs
-        .iter()
-        .filter(|s| !s.label.ends_with('…') && unique(s.label))
-        .find_map(|s| l.command_label(s.id).filter(|t| *t != s.label).map(|t| (s.label.to_string(), t.trim_end_matches('…').to_string())))
-        .expect("some command is translated");
-    assert_eq!(gridcraft_ui_egui::l10n::history_label(&l, &english), shown);
-    assert_eq!(gridcraft_ui_egui::l10n::history_label(&l, "Free text"), "Free text");
+}
+
+#[test]
+fn alt_f8_opens_the_macros_dialog() {
+    let mut h = harness(blank());
+    key(&mut h, Key::F8, Modifiers::ALT);
+    assert_eq!(h.state().dialog.as_ref().map(|d| d.name().to_string()).as_deref(), Some("macros"));
+    h.state_mut().dialog = None;
 }
 
 #[test]

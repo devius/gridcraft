@@ -5,7 +5,7 @@ use std::sync::Mutex;
 
 use gridcraft_core::{CellRef, RangeRef, Value};
 use gridcraft_model::{Sheet, Workbook};
-use gridcraft_numfmt::{Formatted, NumberFormat, format_value_in};
+use gridcraft_numfmt::{Formatted, NumberFormat, format_value};
 
 /// Parsed number formats are cached by code.
 fn parsed(code: &str) -> NumberFormat {
@@ -28,7 +28,38 @@ pub fn number_format(code: &str) -> NumberFormat {
 
 /// Formats a value with a format code.
 pub fn format(v: &Value, code: &str, wb: &Workbook) -> Formatted {
-    format_value_in(v, &parsed(code), wb.date_system, &wb.locale)
+    format_value(v, &parsed(code), wb.date_system)
+}
+
+/// What the cell editor and the formula bar start from. Same as `Cell::input_text`, except that a
+/// constant number in a date or time format is shown as a date (as the grid shows it), not as its
+/// serial. When the formatted text would not read back as the same date (for example
+/// `dddd, mmmm d`), an ISO `yyyy-mm-dd` (with `hh:mm:ss` for a time of day; just `hh:mm:ss`
+/// for a time alone) is used instead, and if even that would not read back, the serial.
+pub fn edit_text(wb: &Workbook, sheet: &Sheet, c: CellRef) -> String {
+    let raw = sheet.input_text(c);
+    let Some(cell) = sheet.cell(c) else { return raw };
+    let Value::Number(n) = &cell.value else { return raw };
+    let code = wb.styles.get(cell.style).num_fmt.as_str();
+    if cell.formula.is_some() || !parsed(code).is_date() {
+        return raw;
+    }
+    let reads_back = |s: &str| matches!(gridcraft_core::parse::parse_input(s, wb.date_system).value, Value::Number(m) if (m - n).abs() < 1e-9);
+    let shown = format(&cell.value, code, wb).text;
+    if reads_back(&shown) {
+        return shown;
+    }
+    let Some(dt) = gridcraft_core::date::datetime_from_serial(wb.date_system, *n) else { return raw };
+    let time = format!("{:02}:{:02}:{:02}", dt.hour, dt.minute, dt.second);
+    let date = format!("{:04}-{:02}-{:02}", dt.year, dt.month, dt.day);
+    let iso = if *n < 1.0 {
+        time
+    } else if n.fract() == 0.0 {
+        date
+    } else {
+        format!("{date} {time}")
+    };
+    if reads_back(&iso) { iso } else { raw }
 }
 
 /// Whether `c` has a formula that must not be shown: its cell is formatted Hidden on a
@@ -49,16 +80,20 @@ pub fn formula_hidden(wb: &Workbook, sheet: &Sheet, c: CellRef) -> bool {
 
 /// The text a cell shows (full precision General; the grid narrows General to fit the column).
 pub fn cell_text(wb: &Workbook, sheet: &Sheet, c: CellRef) -> String {
-    let v = sheet.value(c);
     if sheet.show_formulas
         && let Some(f) = sheet.cell(c).and_then(|x| x.formula.as_ref())
         && !formula_hidden(wb, sheet, c)
     {
-        let si = wb.sheet_index(&sheet.name).unwrap_or(wb.active_sheet);
-        return crate::locale::to_local_formula(&format!("={}", f.text), &wb.locale.dialect(), &|n: &str| wb.knows_name(n, si));
+        return format!("={}", f.text);
     }
+    value_text(wb, sheet, c)
+}
+
+/// A cell's value with its number format applied, independent of column width: no `#####`
+/// and no General narrowing (Save As CSV/Text writes this). Formulas give their result.
+pub fn value_text(wb: &Workbook, sheet: &Sheet, c: CellRef) -> String {
     let style = wb.styles.get(sheet.style_id(c));
-    let f = format(&v, style.num_fmt.as_str(), wb);
+    let f = format(&sheet.value(c), style.num_fmt.as_str(), wb);
     match f.fill {
         Some((_, pos)) => {
             let mut t = f.text;

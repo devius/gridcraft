@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use gridcraft_core::DateSystem;
 use gridcraft_formula::Expr;
-use gridcraft_locale::Locale;
 use serde::{Deserialize, Serialize};
 
 use crate::cell::Formula;
@@ -19,11 +18,16 @@ pub enum CalcMode {
     Manual,
 }
 
+/// File › Options › Formulas › Calculation options, stored per workbook (`<calcPr>`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CalcSettings {
     pub mode: CalcMode,
+    /// Enable iterative calculation: circular references are calculated repeatedly instead of
+    /// reporting an error.
     pub iterative: bool,
+    /// Maximum Iterations, 1 to [`CalcSettings::MAX_ITERATIONS`].
     pub max_iterations: u32,
+    /// Maximum Change: iteration stops once no value in a circular reference changes by more.
     pub max_change: f64,
     /// Use precision as displayed.
     pub precision_as_displayed: bool,
@@ -31,7 +35,32 @@ pub struct CalcSettings {
 
 impl Default for CalcSettings {
     fn default() -> Self {
-        CalcSettings { mode: CalcMode::Automatic, iterative: false, max_iterations: 100, max_change: 0.001, precision_as_displayed: false }
+        CalcSettings {
+            mode: CalcMode::Automatic,
+            iterative: false,
+            max_iterations: Self::DEFAULT_ITERATIONS,
+            max_change: Self::DEFAULT_CHANGE,
+            precision_as_displayed: false,
+        }
+    }
+}
+
+impl CalcSettings {
+    pub const DEFAULT_ITERATIONS: u32 = 100;
+    pub const DEFAULT_CHANGE: f64 = 0.001;
+    /// The largest Maximum Iterations Excel accepts.
+    pub const MAX_ITERATIONS: u32 = 32_767;
+
+    /// Sets Maximum Iterations, kept within 1 to [`CalcSettings::MAX_ITERATIONS`].
+    pub fn set_max_iterations(&mut self, n: u32) {
+        self.max_iterations = n.clamp(1, Self::MAX_ITERATIONS);
+    }
+
+    /// Sets Maximum Change (its magnitude); a value that isn't finite is ignored.
+    pub fn set_max_change(&mut self, d: f64) {
+        if d.is_finite() {
+            self.max_change = d.abs();
+        }
     }
 }
 
@@ -68,14 +97,25 @@ pub struct Workbook {
     pub props: DocProps,
     /// Workbook structure protection.
     pub protected_structure: bool,
+    /// Password of the structure protection (XLSX `workbookProtection`), never the password.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub structure_password: Option<crate::PasswordHash>,
     /// Custom fill lists (Options › Custom Lists) beyond the built-in ones.
     pub custom_lists: Vec<Vec<String>>,
     /// Named cell styles (Cell Styles gallery): name → style.
     pub cell_styles: Vec<(String, crate::style::Style)>,
-    /// Runtime locale (interface, formula language and region). Never serialized: files and the
-    /// journal are canonical, and the engine assigns it to every open document.
+    /// VBA project (`xl/vbaProject.bin`) carried through unchanged. GridCraft does not run
+    /// macros; the blob is preserved so that saving a macro-enabled workbook never destroys the
+    /// macros it arrived with. base64 in JSON. `None` = the workbook has no macros.
+    #[serde(default, with = "crate::b64::opt")]
+    pub vba_project: Option<Vec<u8>>,
+    /// Field separator of the CSV this workbook was read from, so saving it as CSV writes the same
+    /// separator back (a `;` file stays a `;` file). `None` = not read from CSV: CSV saves use `,`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub csv_delimiter: Option<u8>,
+    /// Unmodelled file content kept for saving (package root and workbook level). Not in JSON.
     #[serde(skip)]
-    pub locale: Arc<Locale>,
+    pub preserved: Option<Arc<crate::preserved::Preserved>>,
 }
 
 impl Default for Workbook {
@@ -87,14 +127,8 @@ impl Default for Workbook {
 impl Workbook {
     /// A new workbook with one sheet, "Sheet1".
     pub fn new() -> Workbook {
-        Workbook::new_in(Arc::new(Locale::default()))
-    }
-    /// A new workbook in `locale`: the first sheet gets the interface language's name
-    /// (`Planilha1`).
-    pub fn new_in(locale: Arc<Locale>) -> Workbook {
-        let first = format!("{}1", locale.ui.content("sheet"));
         Workbook {
-            sheets: vec![Arc::new(Sheet::new(first))],
+            sheets: vec![Arc::new(Sheet::new("Sheet1"))],
             names: vec![],
             styles: StyleTable::default(),
             theme: Theme::default(),
@@ -103,9 +137,12 @@ impl Workbook {
             active_sheet: 0,
             props: DocProps::default(),
             protected_structure: false,
+            structure_password: None,
             custom_lists: vec![],
             cell_styles: vec![],
-            locale,
+            vba_project: None,
+            csv_delimiter: None,
+            preserved: None,
         }
     }
     pub fn sheet(&self, i: usize) -> Option<&Sheet> {
@@ -120,10 +157,9 @@ impl Workbook {
     pub fn active(&self) -> Option<&Sheet> {
         self.sheet(self.active_sheet)
     }
-    /// A fresh sheet name `SheetN` (in the interface language: `PlanilhaN`) not in use.
+    /// A fresh sheet name `SheetN` not in use.
     pub fn next_sheet_name(&self) -> String {
-        let base = self.locale.ui.content("sheet");
-        (1..).map(|n| format!("{base}{n}")).find(|n| self.sheet_index(n).is_none()).unwrap_or_else(|| base.into())
+        (1..).map(|n| format!("Sheet{n}")).find(|n| self.sheet_index(n).is_none()).unwrap_or_else(|| "Sheet".into())
     }
     /// Validates a sheet name like Excel: 1–31 chars, none of `: \ / ? * [ ]`, not starting or
     /// ending with `'`, unique (case-insensitive) unless it is `except`'s own name.
@@ -157,12 +193,6 @@ impl Workbook {
             .iter()
             .find(|n| n.scope == Some(sheet) && n.name.eq_ignore_ascii_case(name))
             .or_else(|| self.names.iter().find(|n| n.scope.is_none() && n.name.eq_ignore_ascii_case(name)))
-    }
-    /// Whether `name` is a defined name visible from `sheet` or a table name. Formula text read
-    /// or written in a localized dialect lets these names win over the dialect's function names
-    /// and booleans (`gridcraft_formula::parse_local_with`).
-    pub fn knows_name(&self, name: &str, sheet: usize) -> bool {
-        self.name(name, sheet).is_some() || self.table(name).is_some()
     }
     /// Spells calls of LAMBDA names the way the names are defined (`Double(4)`, where the
     /// parser gives `DOUBLE(4)`: it upper-cases function names, as built-in ones are shown).
@@ -233,6 +263,9 @@ impl Workbook {
                 m = m.max(c.id);
             }
             for c in &s.tables {
+                m = m.max(c.id);
+            }
+            for c in &s.slicers {
                 m = m.max(c.id);
             }
         }

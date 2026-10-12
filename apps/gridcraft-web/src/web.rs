@@ -1,8 +1,9 @@
 //! The browser shell: web `Services`, drag-and-drop, and the eframe web runner.
 
-use gridcraft_engine::{Prefs, Session};
+use gridcraft_engine::Session;
 use gridcraft_ui_egui::{Inbox, Services, SheetApp};
 use wasm_bindgen::JsCast as _;
+use wasm_bindgen::JsValue;
 
 const CANVAS_ID: &str = "gridcraft_canvas";
 const LOADING_ID: &str = "gridcraft_loading";
@@ -31,11 +32,6 @@ pub fn start() {
                 Box::new(move |cc| {
                     let inbox: Inbox = Inbox::default();
                     let mut session = Session::new();
-                    // Saved preferences first, then the browser language ("system" prefs follow it).
-                    if let Some(prefs) = load_json::<Prefs>(PREFS_KEY) {
-                        session.prefs = prefs;
-                    }
-                    session.set_system_locale(&browser_locale());
                     let q = query();
                     if let Some(name) = q.split(['?', '&']).find_map(|kv| kv.strip_prefix("sample=")) {
                         let _ = session.execute("file.new", serde_json::json!({"sample": name}));
@@ -43,11 +39,18 @@ pub fn start() {
                         let _ = session.execute("file.new", serde_json::json!({"sample": "sales"}));
                     }
                     let mut app = SheetApp::new(session, services(inbox.clone(), cc.egui_ctx.clone()));
-                    if let Some(ui) = load_json::<gridcraft_ui_egui::UiState>(UI_KEY) {
-                        app.ui = ui;
+                    app.ui.system_theme = true;
+                    // Follow the browser's language, except a CJK one: the web build has no system
+                    // CJK fonts (none are bundled), so that interface would render as tofu.
+                    let browser = gridcraft_ui_egui::i18n::Language::system();
+                    if !matches!(
+                        browser,
+                        gridcraft_ui_egui::i18n::Language::Zh | gridcraft_ui_egui::i18n::Language::Ja | gridcraft_ui_egui::i18n::Language::Ko
+                    ) {
+                        app.ui.language = browser;
                     }
-                    SheetApp::setup_context(&cc.egui_ctx, app.ui.dark);
-                    Ok(Box::new(WebShell::new(app, inbox)))
+                    SheetApp::setup_context_for_language(&cc.egui_ctx, false, app.ui.language);
+                    Ok(Box::new(WebShell { app, inbox }))
                 }),
             )
             .await;
@@ -64,64 +67,9 @@ fn query() -> String {
     web_sys::window().and_then(|w| w.location().search().ok()).unwrap_or_default()
 }
 
-/// `localStorage` keys of the saved preferences (engine preferences and interface state), JSON.
-const PREFS_KEY: &str = "gridcraft.prefs";
-const UI_KEY: &str = "gridcraft.ui";
-
-/// Seconds between two checks for changed preferences.
-const SAVE_INTERVAL: f64 = 0.25;
-
-fn storage() -> Option<web_sys::Storage> {
-    web_sys::window()?.local_storage().ok().flatten()
-}
-
-/// The browser's preferred language (`navigator.language`, e.g. `pt-BR`); en-US when unavailable.
-fn browser_locale() -> String {
-    web_sys::window().and_then(|w| w.navigator().language()).unwrap_or_else(|| "en-US".to_string())
-}
-
-fn load_json<T: serde::de::DeserializeOwned>(key: &str) -> Option<T> {
-    let text = storage()?.get_item(key).ok().flatten()?;
-    serde_json::from_str(&text).ok()
-}
-
 struct WebShell {
     app: SheetApp,
     inbox: Inbox,
-    /// Last saved JSON of the engine preferences and the interface state.
-    saved_prefs: String,
-    saved_ui: String,
-    /// Egui time of the next check for changed preferences.
-    next_save_check: f64,
-}
-
-impl WebShell {
-    fn new(app: SheetApp, inbox: Inbox) -> WebShell {
-        let saved_prefs = serde_json::to_string(&app.session.prefs).unwrap_or_default();
-        let saved_ui = serde_json::to_string(&app.ui).unwrap_or_default();
-        WebShell { app, inbox, saved_prefs, saved_ui, next_save_check: 0.0 }
-    }
-
-    /// Writes the preferences to `localStorage` when they changed, at most every [`SAVE_INTERVAL`].
-    fn save_prefs(&mut self, ctx: &egui::Context) {
-        let now = ctx.input(|i| i.time);
-        if now < self.next_save_check {
-            return;
-        }
-        self.next_save_check = now + SAVE_INTERVAL;
-        let Some(storage) = storage() else { return };
-        for (key, current, saved) in [
-            (PREFS_KEY, serde_json::to_string(&self.app.session.prefs), &mut self.saved_prefs),
-            (UI_KEY, serde_json::to_string(&self.app.ui), &mut self.saved_ui),
-        ] {
-            if let Ok(text) = current
-                && text != *saved
-                && storage.set_item(key, &text).is_ok()
-            {
-                *saved = text;
-            }
-        }
-    }
 }
 
 impl eframe::App for WebShell {
@@ -142,7 +90,6 @@ impl eframe::App for WebShell {
             });
         }
         self.app.logic(ctx);
-        self.save_prefs(ctx);
     }
 
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
@@ -151,20 +98,11 @@ impl eframe::App for WebShell {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.app.ui(ui);
-        // Preferences only change in response to input. After a frame with input, one more frame
-        // once the throttle has elapsed compares and saves what this frame changed, even when
-        // nothing else repaints; idle frames schedule nothing, so the canvas can stay idle.
-        if ui.ctx().input(|i| !i.events.is_empty() || i.pointer.any_down()) {
-            ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(SAVE_INTERVAL));
-        }
     }
 }
 
 fn services(inbox: Inbox, ctx: egui::Context) -> Services {
     let open_inbox = inbox.clone();
-    let font_inbox = Inbox::default();
-    let fetch_inbox = font_inbox.clone();
-    let fetch_ctx = ctx.clone();
     let picture_ctx = ctx.clone();
     Services {
         copy_html: Some(Box::new(copy_html)),
@@ -173,7 +111,7 @@ fn services(inbox: Inbox, ctx: egui::Context) -> Services {
             let ctx = ctx.clone();
             wasm_bindgen_futures::spawn_local(async move {
                 let Some(file) = rfd::AsyncFileDialog::new()
-                    .add_filter("Spreadsheets", &["xlsx", "xlsm", "xlsb", "ods", "csv", "tsv", "txt", "json"])
+                    .add_filter("Spreadsheets", &["xlsx", "xlsm", "xls", "xlsb", "ods", "csv", "tsv", "txt", "json"])
                     .pick_file()
                     .await
                 else {
@@ -200,44 +138,19 @@ fn services(inbox: Inbox, ctx: egui::Context) -> Services {
                 log::error!("download of {name} failed: {e}");
             }
         })),
+        print: Some(Box::new(|bytes: &[u8]| {
+            if let Err(e) = print_pdf(bytes) {
+                log::error!("print failed: {e}");
+            }
+        })),
         open_url: Some(Box::new(|url: &str| {
             if let Some(w) = web_sys::window() {
                 let _ = w.open_with_url_and_target(url, "_blank");
             }
         })),
         inbox: Some(inbox),
-        // CJK text and CJK interface languages need a font that is not part of the bundle: the page
-        // serves it from `./fonts/<name>` (see packaging/web/README.md).
-        fetch_font: Some(Box::new(move |name: &str| {
-            let name = name.to_string();
-            let inbox = fetch_inbox.clone();
-            let ctx = fetch_ctx.clone();
-            wasm_bindgen_futures::spawn_local(async move {
-                match fetch_bytes(&format!("./fonts/{name}")).await {
-                    Ok(bytes) => {
-                        inbox.lock().unwrap_or_else(|e| e.into_inner()).push((name, bytes));
-                        ctx.request_repaint();
-                    }
-                    Err(e) => log::warn!("font ./fonts/{name} is not available ({e}); CJK text shows as boxes without it"),
-                }
-            });
-        })),
-        font_inbox: Some(font_inbox),
         ..Default::default()
     }
-}
-
-/// Downloads `url` (relative to the page) and returns the response body.
-async fn fetch_bytes(url: &str) -> Result<Vec<u8>, String> {
-    let js = |e: wasm_bindgen::JsValue| format!("{e:?}");
-    let window = web_sys::window().ok_or("no window")?;
-    let response = wasm_bindgen_futures::JsFuture::from(window.fetch_with_str(url)).await.map_err(js)?;
-    let response: web_sys::Response = response.dyn_into().map_err(|_| "not a response")?;
-    if !response.ok() {
-        return Err(format!("HTTP {}", response.status()));
-    }
-    let buffer = wasm_bindgen_futures::JsFuture::from(response.array_buffer().map_err(js)?).await.map_err(js)?;
-    Ok(js_sys::Uint8Array::new(&buffer).to_vec())
 }
 
 /// Start inside the copy gesture; deferring `write` can lose browser user activation.
@@ -273,17 +186,184 @@ fn copy_html(html: &str, text: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Triggers a browser download of `bytes`.
-fn download(name: &str, bytes: &[u8]) -> Result<(), String> {
+/// Opens `bytes` (a PDF) as an object URL in a hidden iframe and calls the iframe's own
+/// `print()` once it has finished loading — the standard way to drive the browser's native print
+/// dialog on a PDF without a download or a popup window the browser might block. The blob URL and
+/// the iframe are both cleaned up once the print dialog closes, so repeated prints don't leak
+/// them.
+fn print_pdf(bytes: &[u8]) -> Result<(), String> {
     let js = |e: wasm_bindgen::JsValue| format!("{e:?}");
     let window = web_sys::window().ok_or("no window")?;
     let document = window.document().ok_or("no document")?;
+
     let parts = js_sys::Array::of1(&js_sys::Uint8Array::from(bytes));
     let opts = web_sys::BlobPropertyBag::new();
-    opts.set_type(if name.ends_with(".csv") { "text/csv" } else { "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    opts.set_type("application/pdf");
     let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(&parts, &opts).map_err(js)?;
     let url = web_sys::Url::create_object_url_with_blob(&blob).map_err(js)?;
-    let a: web_sys::HtmlAnchorElement = document.create_element("a").map_err(js)?.dyn_into().map_err(|_| "not an anchor")?;
+
+    let iframe: web_sys::HtmlIFrameElement = document.create_element("iframe").map_err(js)?.dyn_into().map_err(|_| "not an iframe")?;
+    iframe.style().set_property("display", "none").map_err(js)?;
+    document.body().ok_or("no body")?.append_child(&iframe).map_err(js)?;
+
+    // `onload` fires once the PDF has actually rendered inside the iframe;
+    // printing before that would show a blank page. Set the handler BEFORE
+    // `src` so a fast/cached load can't fire before we're listening.
+    let iframe_for_load = iframe.clone();
+    let url_for_cleanup = url.clone();
+    let on_load = wasm_bindgen::closure::Closure::once_into_js(move || {
+        let Some(content_window) = iframe_for_load.content_window() else { return };
+        let _ = content_window.print();
+        // `afterprint` fires once the print dialog (or print preview) closes, whether the user
+        // printed or cancelled — the right moment to release the blob URL and drop the iframe.
+        let iframe_for_cleanup = iframe_for_load.clone();
+        let on_after_print = wasm_bindgen::closure::Closure::once_into_js(move || {
+            web_sys::Url::revoke_object_url(&url_for_cleanup).ok();
+            iframe_for_cleanup.remove();
+        });
+        let _ = content_window.add_event_listener_with_callback("afterprint", on_after_print.unchecked_ref());
+    });
+    iframe.set_onload(Some(on_load.unchecked_ref()));
+    iframe.set_src(&url);
+    Ok(())
+}
+
+fn mime_for(name: &str) -> &'static str {
+    match name.rsplit('.').next().map(str::to_ascii_lowercase).as_deref() {
+        Some("xlsx") => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        Some("xlsm") => "application/vnd.ms-excel.sheet.macroEnabled.12",
+        Some("xlsb") => "application/vnd.ms-excel.sheet.binary.macroEnabled.12",
+        Some("ods") => "application/vnd.oasis.opendocument.spreadsheet",
+        Some("csv") => "text/csv",
+        Some("tsv" | "txt") => "text/plain",
+        Some("pdf") => "application/pdf",
+        Some("html" | "htm") => "text/html",
+        Some("json") => "application/json",
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        _ => "application/octet-stream",
+    }
+}
+
+/// Trigger a browser save dialog or download of `bytes` named after `name`.
+
+fn download(name: &str, bytes: &[u8]) -> Result<(), String> {
+    let js = |e: wasm_bindgen::JsValue| format!("{e:?}");
+    let window = web_sys::window().ok_or("no window")?;
+
+    let show_picker_fn: Option<js_sys::Function> =
+        js_sys::Reflect::get(&window, &JsValue::from_str("showSaveFilePicker")).ok().and_then(|v| v.dyn_into().ok());
+
+    if let Some(picker_fn) = show_picker_fn {
+        let ext = std::path::Path::new(name).extension().and_then(|e| e.to_str()).unwrap_or("xlsx").to_ascii_lowercase();
+        let dot_ext = format!(".{ext}");
+        let mime = mime_for(name);
+
+        let accept_obj = js_sys::Object::new();
+        let exts_arr = js_sys::Array::new();
+        exts_arr.push(&JsValue::from_str(&dot_ext));
+        let _ = js_sys::Reflect::set(&accept_obj, &JsValue::from_str(mime), &exts_arr);
+
+        let type_desc = match ext.as_str() {
+            "xlsx" => "Excel Workbook (*.xlsx)",
+            "xlsm" => "Excel Macro-Enabled Workbook (*.xlsm)",
+            "xlsb" => "Excel Binary Workbook (*.xlsb)",
+            "ods" => "OpenDocument Spreadsheet (*.ods)",
+            "csv" => "CSV (Comma delimited) (*.csv)",
+            "tsv" => "Tab Delimited Text (*.tsv)",
+            "txt" => "Plain Text (*.txt)",
+            "pdf" => "PDF Document (*.pdf)",
+            "html" | "htm" => "HTML Document (*.html)",
+            "json" => "JSON Document (*.json)",
+            "png" => "PNG Image (*.png)",
+            "jpg" | "jpeg" => "JPEG Image (*.jpeg)",
+            _ => "Spreadsheet",
+        };
+
+        let type_obj = js_sys::Object::new();
+        let _ = js_sys::Reflect::set(&type_obj, &JsValue::from_str("description"), &JsValue::from_str(type_desc));
+        let _ = js_sys::Reflect::set(&type_obj, &JsValue::from_str("accept"), &accept_obj);
+
+        let types_arr = js_sys::Array::new();
+        types_arr.push(&type_obj);
+
+        let picker_opts = js_sys::Object::new();
+        let _ = js_sys::Reflect::set(&picker_opts, &JsValue::from_str("suggestedName"), &JsValue::from_str(name));
+        let _ = js_sys::Reflect::set(&picker_opts, &JsValue::from_str("types"), &types_arr);
+
+        let prom_val = picker_fn.call1(&window, &picker_opts).map_err(js)?;
+        let prom: js_sys::Promise = prom_val.dyn_into().map_err(|_| "not a promise".to_string())?;
+
+        let bytes_vec = bytes.to_vec();
+        let name_owned = name.to_string();
+        // Anything but the user cancelling (no user gesture, a denied permission, a failed write)
+        // falls back to an ordinary download, so a save never fails silently.
+        let fallback = move |bytes: &[u8]| {
+            if let Some(w) = web_sys::window()
+                && let Err(e) = trigger_anchor_download(&w, &name_owned, bytes)
+            {
+                log::error!("download fallback failed: {e}");
+            }
+        };
+        wasm_bindgen_futures::spawn_local(async move {
+            match wasm_bindgen_futures::JsFuture::from(prom).await {
+                Ok(handle_val) => {
+                    if let Err(e) = write_file_handle(&handle_val, &bytes_vec).await {
+                        log::error!("failed writing to file handle: {e}");
+                        fallback(&bytes_vec);
+                    } else {
+                        log::info!("Successfully saved file through save file picker");
+                    }
+                }
+                Err(e) => {
+                    let err_name = js_sys::Reflect::get(&e, &JsValue::from_str("name")).ok().and_then(|v| v.as_string()).unwrap_or_default();
+                    if err_name == "AbortError" {
+                        log::info!("Save file dialog cancelled by user");
+                    } else {
+                        log::warn!("showSaveFilePicker refused ({err_name}); downloading instead");
+                        fallback(&bytes_vec);
+                    }
+                }
+            }
+        });
+        return Ok(());
+    }
+
+    // Fallback for browsers without showSaveFilePicker (e.g. Firefox, Safari):
+    trigger_anchor_download(&window, name, bytes)
+}
+
+async fn write_file_handle(handle: &JsValue, bytes: &[u8]) -> Result<(), String> {
+    let js = |e: wasm_bindgen::JsValue| format!("{e:?}");
+    let create_fn: js_sys::Function = js_sys::Reflect::get(handle, &JsValue::from_str("createWritable"))
+        .map_err(js)?
+        .dyn_into()
+        .map_err(|_| "createWritable is not a function".to_string())?;
+    let stream_prom: js_sys::Promise = create_fn.call0(handle).map_err(js)?.dyn_into().map_err(|_| "not a promise".to_string())?;
+    let stream = wasm_bindgen_futures::JsFuture::from(stream_prom).await.map_err(js)?;
+
+    let write_fn: js_sys::Function =
+        js_sys::Reflect::get(&stream, &JsValue::from_str("write")).map_err(js)?.dyn_into().map_err(|_| "write is not a function".to_string())?;
+    let uint8 = js_sys::Uint8Array::from(bytes);
+    let write_prom: js_sys::Promise = write_fn.call1(&stream, &uint8).map_err(js)?.dyn_into().map_err(|_| "not a promise".to_string())?;
+    wasm_bindgen_futures::JsFuture::from(write_prom).await.map_err(js)?;
+
+    let close_fn: js_sys::Function =
+        js_sys::Reflect::get(&stream, &JsValue::from_str("close")).map_err(js)?.dyn_into().map_err(|_| "close is not a function".to_string())?;
+    let close_prom: js_sys::Promise = close_fn.call0(&stream).map_err(js)?.dyn_into().map_err(|_| "not a promise".to_string())?;
+    wasm_bindgen_futures::JsFuture::from(close_prom).await.map_err(js)?;
+    Ok(())
+}
+
+fn trigger_anchor_download(window: &web_sys::Window, name: &str, bytes: &[u8]) -> Result<(), String> {
+    let js = |e: wasm_bindgen::JsValue| format!("{e:?}");
+    let document = window.document().ok_or("no document")?;
+    let parts = js_sys::Array::of1(&js_sys::Uint8Array::from(bytes));
+    let opts = web_sys::BlobPropertyBag::new();
+    opts.set_type(mime_for(name));
+    let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(&parts, &opts).map_err(js)?;
+    let url = web_sys::Url::create_object_url_with_blob(&blob).map_err(js)?;
+    let a: web_sys::HtmlAnchorElement = document.create_element("a").map_err(js)?.dyn_into().map_err(|_| "not an anchor".to_string())?;
     a.set_href(&url);
     a.set_download(name);
     a.style().set_property("display", "none").map_err(js)?;

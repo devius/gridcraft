@@ -4,7 +4,6 @@ use egui::{Color32, FontId, Key, Modifiers, Rect, TextEdit};
 use gridcraft_engine::{Mode, model::ShapeKind};
 use serde_json::json;
 
-use crate::l10n::{Tr, msg};
 use crate::{SheetApp, grid::Geo, theme};
 
 #[derive(Clone, Debug)]
@@ -28,7 +27,7 @@ impl SheetApp {
             return false;
         }
         if let Err(e) = self.commit_text_box_edit() {
-            self.message = Some((self.l10n.tr("Text Box").into_owned(), self.error_text(&e)));
+            self.message = Some(("Text Box".into(), crate::clean_error(&e)));
             return false;
         }
         let Some(d) = self.session.active() else { return false };
@@ -38,7 +37,7 @@ impl SheetApp {
         };
         // shape.setText refuses edits on a protected sheet; don't open an editor that can't commit.
         if sh.is_protected() {
-            self.message = Some((self.l10n.tr("Text Box").into_owned(), self.error_text(&gridcraft_engine::EngineError::Protected)));
+            self.message = Some(("Text Box".into(), "The cell or chart you're trying to change is on a protected sheet.".into()));
             return false;
         }
         self.text_box_editor = Some(EditState {
@@ -57,15 +56,15 @@ impl SheetApp {
         true
     }
 
-    pub fn commit_text_box_edit(&mut self) -> Result<(), gridcraft_engine::EngineError> {
+    pub fn commit_text_box_edit(&mut self) -> Result<(), String> {
         let Some(ed) = self.text_box_editor.take() else { return Ok(()) };
         let result = if self.view_key() != Some((ed.uid, ed.sheet)) {
-            Err(gridcraft_engine::EngineError::Other(msg!("The text box's worksheet is no longer active.").into()))
+            Err("The text box's worksheet is no longer active.".into())
         } else if ed.text == ed.original {
             Ok(())
         } else {
             // Call the engine directly: app.run flushes this draft before saving/switching.
-            self.session.execute("shape.setText", json!({"id": ed.id, "text": ed.text})).map(|_| ())
+            self.session.run("shape.setText", json!({"id": ed.id, "text": ed.text})).map(|_| ())
         };
         match result {
             Ok(()) => {
@@ -102,7 +101,7 @@ pub(crate) fn before_ui(app: &mut SheetApp, ctx: &egui::Context) {
     if outside {
         match app.commit_text_box_edit() {
             Ok(()) => ctx.memory_mut(|m| m.surrender_focus(editor_id())),
-            Err(e) => app.message = Some((app.l10n.tr("Text Box").into_owned(), app.error_text(&e))),
+            Err(e) => app.message = Some(("Text Box".into(), crate::clean_error(&e))),
         }
     }
 }
@@ -130,7 +129,7 @@ pub(crate) fn show(app: &mut SheetApp, ui: &mut egui::Ui, geo: &Geo, sh: &gridcr
             None
         }
     });
-    let rect = crate::chartview::anchor_rect(geo, sh, &shape.anchor).shrink(4.0).intersect(geo.cells);
+    let rect = geo.mirror_rect(crate::chartview::anchor_rect(geo, sh, &shape.anchor).shrink(4.0).intersect(geo.cells));
     if !rect.is_positive() {
         ed.rect = None;
         app.text_box_editor = Some(ed);

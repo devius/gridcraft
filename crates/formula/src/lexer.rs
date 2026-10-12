@@ -1,14 +1,10 @@
-//! Tokenizer for Excel formulas.
-//!
-//! The text is read in a [`Dialect`]: numbers use the region's decimal separator, the region's
-//! list separator lexes as [`Tok::Comma`] outside array constants, and inside `{}` the region's
-//! column and row separators lex as [`Tok::Comma`] and [`Tok::Semicolon`]. Boolean and error
-//! literals are the dialect language's. The parser therefore only sees abstract tokens.
+//! Tokenizer for Excel formulas (A1 style, canonical or selected UI separators).
 //!
 //! Token spans are byte offsets into the source, which the editor uses to colour references.
 
 use gridcraft_core::CellError;
-use gridcraft_locale::{Dialect, Regional};
+
+use crate::ast::TrimMode;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Tok {
@@ -33,6 +29,8 @@ pub enum Tok {
     Comma,
     Semicolon,
     Colon,
+    /// Trim reference range operator `.:`, `:.` or `.:.`.
+    Trim(TrimMode),
     Space,
     Eof,
 }
@@ -51,31 +49,40 @@ pub struct LexError {
     pub pos: usize,
 }
 
-/// Characters that may be part of a word. Inside array constants the region's column and row
-/// separators are not word characters (`.` in German, `\` in Portuguese).
-fn is_word_char(c: char, in_array: bool, r: &Regional) -> bool {
-    c.is_alphanumeric() || (matches!(c, '_' | '.' | '$' | '\\' | '?') && !(in_array && (c == r.array_col || c == r.array_row)))
+fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || matches!(c, '_' | '.' | '$' | '\\' | '?')
 }
 
-/// Tokenizes canonical (en-US) formula text (without the leading `=`).
+/// `A1`, `$A$1`, `A`, `$A`, `1`, `$1`: a word that can end a range, so `A1.:` is a trim
+/// reference and not a name ending in a dot.
+fn is_range_end(w: &str) -> bool {
+    let s = w.strip_prefix('$').unwrap_or(w);
+    let (letters, rest) = s.split_at(s.find(|c: char| !c.is_ascii_alphabetic()).unwrap_or(s.len()));
+    let digits = if letters.is_empty() { rest } else { rest.strip_prefix('$').unwrap_or(rest) };
+    letters.len() <= 3 && if digits.is_empty() { !letters.is_empty() && rest.is_empty() } else { digits.bytes().all(|b| b.is_ascii_digit()) }
+}
+
+/// Whether `c` can start the second end of a range after `:.` (`A1:.E10`, `A:.$C`, `1:.5`).
+fn starts_range_end(c: Option<char>) -> bool {
+    c.is_some_and(|c| c.is_ascii_alphanumeric() || c == '$')
+}
+
+/// Tokenizes formula text (without the leading `=`).
 pub fn tokenize(src: &str) -> Result<Vec<Token>, LexError> {
-    tokenize_local(src, &Dialect::INVARIANT)
+    tokenize_locale(src, crate::FormulaLocale::En)
 }
 
-/// Tokenizes formula text (without the leading `=`) written in `d`.
-pub fn tokenize_local(src: &str, d: &Dialect) -> Result<Vec<Token>, LexError> {
-    let r = d.regional;
-    let mut braces = 0usize;
+/// Tokenizes UI syntax while retaining byte spans in the original text.
+pub fn tokenize_locale(src: &str, locale: crate::FormulaLocale) -> Result<Vec<Token>, LexError> {
     let chars: Vec<(usize, char)> = src.char_indices().collect();
     let n = chars.len();
     let pos_of = |i: usize| chars.get(i).map(|c| c.0).unwrap_or(src.len());
     let ch = |i: usize| chars.get(i).map(|c| c.1);
     let mut out = Vec::new();
     let mut i = 0;
+    let mut array_depth = 0usize;
     while i < n {
         let start = pos_of(i);
-        let in_array = braces > 0;
-        let word = |x: char| is_word_char(x, in_array, r);
         let Some(c) = ch(i) else { break };
         let push = |out: &mut Vec<Token>, tok: Tok, end_i: usize| out.push(Token { tok, start, end: pos_of(end_i) });
         match c {
@@ -149,16 +156,16 @@ pub fn tokenize_local(src: &str, d: &Dialect) -> Result<Vec<Token>, LexError> {
             '#' => {
                 // Error literal, or #-prefixed struct specifier (only inside [] which we lex as Struct).
                 let rest = src.get(start..).unwrap_or("");
-                let Some((canonical, bytes)) = d.names.error_prefix(rest) else {
-                    return Err(LexError { msg: "unknown error literal".into(), pos: start });
-                };
-                let Some(e) = CellError::parse(canonical) else {
-                    return Err(LexError { msg: "unknown error literal".into(), pos: start });
-                };
-                // Never advance by zero characters: that would loop forever.
-                let Some(len) = rest.get(..bytes).map(|s| s.chars().count()).filter(|n| *n > 0) else {
-                    return Err(LexError { msg: "unknown error literal".into(), pos: start });
-                };
+                let mut found = None;
+                for e in CellError::ALL {
+                    let t = e.as_str();
+                    if rest.len() >= t.len() && rest.get(..t.len()).is_some_and(|p| p.eq_ignore_ascii_case(t)) {
+                        found = Some(e);
+                        break;
+                    }
+                }
+                let Some(e) = found else { return Err(LexError { msg: "unknown error literal".into(), pos: start }) };
+                let len = e.as_str().chars().count();
                 // `#REF!A1` style is not valid; `#REF!` is an error literal.
                 push(&mut out, Tok::Error(e), i + len);
                 i += len;
@@ -189,20 +196,39 @@ pub fn tokenize_local(src: &str, d: &Dialect) -> Result<Vec<Token>, LexError> {
                 push(&mut out, Tok::Struct(inner), j);
                 i = j;
             }
-            c if c.is_ascii_digit() || (c == r.decimal && ch(i + 1).is_some_and(|d| d.is_ascii_digit())) => {
+            '.' if ch(i + 1) == Some(':') => {
+                // Trim reference `A1.:E10` / `A1.:.E10` (the word before stopped at the dot).
+                if ch(i + 2) == Some('.') && starts_range_end(ch(i + 3)) {
+                    push(&mut out, Tok::Trim(TrimMode::All), i + 3);
+                    i += 3;
+                } else {
+                    push(&mut out, Tok::Trim(TrimMode::Leading), i + 2);
+                    i += 2;
+                }
+            }
+            c if c.is_ascii_digit() || (c == locale.decimal_separator() && ch(i + 1).is_some_and(|d| d.is_ascii_digit())) => {
                 // Number, unless it is a row range like 1:3 (handled by parser via Word) — numbers
-                // followed by ':' and digits are row refs: lex as Word. Array constants hold no
-                // references, and `:` separates their rows in some regions (ru-RU `{1;2:3;4}`).
+                // followed by ':' and digits are row refs: lex as Word.
                 let mut j = i;
                 while ch(j).is_some_and(|d| d.is_ascii_digit()) {
                     j += 1;
                 }
-                let is_row_ref = !in_array && ch(j) == Some(':') && {
-                    let mut k = j + 1;
-                    if ch(k) == Some('$') {
+                // Row ranges `1:3`, and the trim forms `1.:3`, `1:.3`, `1.:.3`.
+                let is_row_ref = {
+                    let mut k = j;
+                    if ch(k) == Some('.') && ch(k + 1) == Some(':') {
                         k += 1;
                     }
-                    ch(k).is_some_and(|d| d.is_ascii_digit())
+                    ch(k) == Some(':') && {
+                        k += 1;
+                        if ch(k) == Some('.') {
+                            k += 1;
+                        }
+                        if ch(k) == Some('$') {
+                            k += 1;
+                        }
+                        ch(k).is_some_and(|d| d.is_ascii_digit())
+                    }
                 };
                 // A word like "1A" can't happen in valid formulas; numbers then.
                 if is_row_ref {
@@ -211,7 +237,7 @@ pub fn tokenize_local(src: &str, d: &Dialect) -> Result<Vec<Token>, LexError> {
                     i = j;
                     continue;
                 }
-                if ch(j) == Some(r.decimal) {
+                if ch(j) == Some(locale.decimal_separator()) {
                     j += 1;
                     while ch(j).is_some_and(|d| d.is_ascii_digit()) {
                         j += 1;
@@ -229,8 +255,11 @@ pub fn tokenize_local(src: &str, d: &Dialect) -> Result<Vec<Token>, LexError> {
                         j = k;
                     }
                 }
-                let text: String = src.get(start..pos_of(j)).unwrap_or("").chars().map(|c| if c == r.decimal { '.' } else { c }).collect();
-                let v: f64 = text.parse().map_err(|_| LexError { msg: format!("bad number `{text}`"), pos: start })?;
+                let text = src.get(start..pos_of(j)).unwrap_or("");
+                let v: f64 = text
+                    .replace(locale.decimal_separator(), ".")
+                    .parse()
+                    .map_err(|_| LexError { msg: format!("bad number `{text}`"), pos: start })?;
                 push(&mut out, Tok::Number(v), j);
                 i = j;
             }
@@ -243,35 +272,31 @@ pub fn tokenize_local(src: &str, d: &Dialect) -> Result<Vec<Token>, LexError> {
                 i += 1;
             }
             '{' => {
-                braces += 1;
+                array_depth += 1;
                 push(&mut out, Tok::LBrace, i + 1);
                 i += 1;
             }
             '}' => {
-                braces = braces.saturating_sub(1);
+                array_depth = array_depth.saturating_sub(1);
                 push(&mut out, Tok::RBrace, i + 1);
                 i += 1;
             }
-            c if in_array && c == r.array_col => {
+            c if (array_depth == 0 && c == locale.list_separator()) || (array_depth > 0 && c == locale.array_column_separator()) => {
                 push(&mut out, Tok::Comma, i + 1);
                 i += 1;
             }
-            c if in_array && c == r.array_row => {
-                push(&mut out, Tok::Semicolon, i + 1);
-                i += 1;
-            }
-            c if !in_array && c == r.list => {
-                push(&mut out, Tok::Comma, i + 1);
-                i += 1;
-            }
-            // A list or row separator that does not belong to this dialect: the parser rejects it.
             ';' => {
                 push(&mut out, Tok::Semicolon, i + 1);
                 i += 1;
             }
             ':' => {
-                push(&mut out, Tok::Colon, i + 1);
-                i += 1;
+                if ch(i + 1) == Some('.') && starts_range_end(ch(i + 2)) {
+                    push(&mut out, Tok::Trim(TrimMode::Trailing), i + 2);
+                    i += 2;
+                } else {
+                    push(&mut out, Tok::Colon, i + 1);
+                    i += 1;
+                }
             }
             '+' | '-' | '*' | '/' | '^' | '&' | '%' | '@' | '=' => {
                 let op = match c {
@@ -300,9 +325,9 @@ pub fn tokenize_local(src: &str, d: &Dialect) -> Result<Vec<Token>, LexError> {
                 push(&mut out, Tok::Op(op), i + len);
                 i += len;
             }
-            c if word(c) => {
+            c if is_word_char(c) => {
                 let mut j = i;
-                while ch(j).is_some_and(word) {
+                while ch(j).is_some_and(|c| is_word_char(c) && !(array_depth > 0 && c == locale.array_column_separator())) {
                     j += 1;
                 }
                 let w: String = chars.get(i..j).map(|s| s.iter().map(|c| c.1).collect()).unwrap_or_default();
@@ -312,13 +337,13 @@ pub fn tokenize_local(src: &str, d: &Dialect) -> Result<Vec<Token>, LexError> {
                 } else if ch(j) == Some(':') && {
                     // Sheet1:Sheet3!A1 — look ahead for word then '!'
                     let mut k = j + 1;
-                    while ch(k).is_some_and(word) {
+                    while ch(k).is_some_and(|c| is_word_char(c) && !(array_depth > 0 && c == locale.array_column_separator())) {
                         k += 1;
                     }
                     k > j + 1 && ch(k) == Some('!')
                 } {
                     let mut k = j + 1;
-                    while ch(k).is_some_and(word) {
+                    while ch(k).is_some_and(|c| is_word_char(c) && !(array_depth > 0 && c == locale.array_column_separator())) {
                         k += 1;
                     }
                     let w2: String = chars.get(j + 1..k).map(|s| s.iter().map(|c| c.1).collect()).unwrap_or_default();
@@ -327,11 +352,17 @@ pub fn tokenize_local(src: &str, d: &Dialect) -> Result<Vec<Token>, LexError> {
                 } else if ch(j) == Some('(') {
                     push(&mut out, Tok::Func(w), j + 1);
                     i = j + 1;
-                } else if ch(j) != Some('[')
-                    && let Some(b) = d.names.parse_bool(&w)
-                {
-                    push(&mut out, Tok::Bool(b), j);
+                } else if w.eq_ignore_ascii_case("TRUE") && ch(j) != Some('[') {
+                    push(&mut out, Tok::Bool(true), j);
                     i = j;
+                } else if w.eq_ignore_ascii_case("FALSE") && ch(j) != Some('[') {
+                    push(&mut out, Tok::Bool(false), j);
+                    i = j;
+                } else if w.len() > 1 && w.ends_with('.') && ch(j) == Some(':') && is_range_end(w.get(..w.len() - 1).unwrap_or("")) {
+                    // `A1.:E10`: the dot belongs to the trim operator, lexed next.
+                    let w = w.get(..w.len() - 1).unwrap_or("").to_string();
+                    push(&mut out, Tok::Word(w), j - 1);
+                    i = j - 1;
                 } else {
                     push(&mut out, Tok::Word(w), j);
                     i = j;

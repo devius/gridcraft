@@ -5,10 +5,6 @@
 //! `--control <port>` (or `GRIDCRAFT_CONTROL_PORT`) starts a localhost JSON-lines control
 //! server: `{"id":1,"method":"ui.inspect","params":{}}` → `{"id":1,"ok":true,"result":…}`.
 //! See `gridcraft_ui_egui::control` and `docs/control-protocol.md` for the methods.
-//!
-//! Language and regional format: the interface language, the formula language and the regional
-//! format follow the operating system (detected at every start with `sys-locale`) until changed in
-//! Options › Language or with `app.setLocale`; the choice is kept in `prefs.json`.
 #![cfg_attr(all(target_os = "windows", not(debug_assertions)), windows_subsystem = "windows")]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
@@ -18,12 +14,14 @@ mod control_server;
 #[cfg(any(target_os = "windows", test))]
 mod graphics;
 mod logging;
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-mod menu_model;
 #[cfg(target_os = "macos")]
 mod native_menu;
+mod print;
 
-use gridcraft_engine::{Prefs, Session};
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use gridcraft_engine::Session;
 use gridcraft_ui_egui::{Services, SheetApp};
 use serde_json::json;
 
@@ -34,14 +32,18 @@ impl eframe::App for App {
         #[cfg(target_os = "macos")]
         {
             if self.1.is_none() && std::env::var_os("GRIDCRAFT_NO_NATIVE_MENU").is_none() {
-                self.1 = Some(native_menu::NativeMenu::install(ctx, &self.0));
+                self.1 = Some(native_menu::NativeMenu::install(ctx));
             }
-            if let Some(m) = &mut self.1 {
+            if let Some(m) = &self.1 {
                 m.poll(&mut self.0, ctx);
             }
             apple_events::poll(&self.2, &mut self.0, ctx);
         }
         self.0.logic(ctx);
+        self.0.poll_printing(ctx);
+        if ctx.input(|input| input.viewport().close_requested()) && self.0.printing.busy() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        }
     }
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
         self.0.raw_input_hook(raw);
@@ -56,7 +58,18 @@ impl eframe::App for App {
         self.0.ui(ui);
     }
     fn on_exit(&mut self) {
+        print::finish_pending_jobs();
         save_prefs(&self.0);
+        // macOS (#117): end the process here, before eframe tears the window down. AccessKit's
+        // macOS adapter subclasses the window's content view and restores its class on teardown;
+        // AppKit's Touch Bar support observes that view (KVO), so in the next display cycle
+        // `-[_NSTouchBarFinderObservation invalidate]` throws "not registered" and the quit ends
+        // in a crash report. eframe calls `on_exit` on every way of quitting (Quit/⌘Q, the Dock,
+        // the close button, `app.quit`), and nothing after it is needed: the preferences are
+        // saved and the log file is unbuffered. eframe does the same when it doesn't
+        // run-and-return. `on_exit` only runs once the app exists, never on a failed start.
+        #[cfg(target_os = "macos")]
+        std::process::exit(0);
     }
 }
 
@@ -73,11 +86,6 @@ fn config_dir() -> Option<std::path::PathBuf> {
     }
 }
 
-/// The operating system's locale tag (`pt-BR`); en-US when it cannot be read.
-fn system_locale() -> String {
-    sys_locale::get_locale().unwrap_or_else(|| "en-US".to_string())
-}
-
 /// Runs without preferences (`GRIDCRAFT_NO_PREFS`, agents' test runs) neither read nor write
 /// them, and keep no log file.
 fn prefs_enabled() -> bool {
@@ -89,45 +97,27 @@ fn log_dir() -> Option<std::path::PathBuf> {
     Some(config_dir()?.join("logs"))
 }
 
-fn read_prefs(dir: &std::path::Path) -> Option<Prefs> {
-    serde_json::from_slice(&std::fs::read(dir.join("prefs.json")).ok()?).ok()
-}
-
-fn write_prefs(dir: &std::path::Path, prefs: &Prefs) {
-    let _ = std::fs::create_dir_all(dir);
-    if let Ok(b) = serde_json::to_vec_pretty(prefs) {
-        let _ = std::fs::write(dir.join("prefs.json"), b);
-    }
-}
-
-/// Loads `prefs.json` into the session, then resolves the language and regional format ("system"
-/// follows the operating system) so that workbooks created afterwards use them.
-fn load_session_prefs(session: &mut Session) {
-    if prefs_enabled()
-        && let Some(dir) = config_dir()
-        && let Some(p) = read_prefs(&dir)
-    {
-        session.prefs = p;
-    }
-    session.set_system_locale(&system_locale());
-}
-
-fn load_ui_prefs(app: &mut SheetApp) {
+fn load_prefs(app: &mut SheetApp) {
     if !prefs_enabled() {
         return;
     }
+    // First run (or a ui.json without a usable language): follow the desktop's language.
+    app.ui.language = gridcraft_ui_egui::i18n::Language::system();
+    // ...and its light or dark appearance (#239), until a theme is chosen and saved in ui.json.
+    app.ui.system_theme = true;
     let Some(dir) = config_dir() else { return };
     if let Ok(b) = std::fs::read(dir.join("ui.json"))
-        && let Ok(saved) = serde_json::from_slice::<serde_json::Value>(&b)
+        && let Ok(ui) = serde_json::from_slice::<gridcraft_ui_egui::UiState>(&b)
     {
-        if let Ok(ui) = <gridcraft_ui_egui::UiState as serde::Deserialize>::deserialize(&saved) {
-            app.ui = ui;
-        }
-        if app.migrate_ui_language(&saved) {
-            // Persist both files at once: ui.json without the old `language` key, so a crash
-            // before exit can't migrate it again over a later choice of "system".
-            save_prefs(app);
-        }
+        let saved = serde_json::from_slice(&b).ok().and_then(|v| gridcraft_ui_egui::i18n::saved_language(&v));
+        let language = saved.unwrap_or(app.ui.language);
+        app.ui = ui;
+        app.ui.language = language;
+    }
+    if let Ok(b) = std::fs::read(dir.join("prefs.json"))
+        && let Ok(p) = serde_json::from_slice(&b)
+    {
+        app.session.prefs = p;
     }
 }
 
@@ -140,23 +130,35 @@ fn save_prefs(app: &SheetApp) {
     if let Ok(b) = serde_json::to_vec_pretty(&app.ui) {
         let _ = std::fs::write(dir.join("ui.json"), b);
     }
-    write_prefs(&dir, &app.session.prefs);
+    if let Ok(b) = serde_json::to_vec_pretty(&app.session.prefs) {
+        let _ = std::fs::write(dir.join("prefs.json"), b);
+    }
 }
 
 fn services() -> Services {
     // Keep the owner alive: X11/Wayland serve clipboard data from this handle.
-    let mut clipboard: Option<arboard::Clipboard> = None;
+    let clipboard: Rc<RefCell<Option<arboard::Clipboard>>> = Rc::default();
+    let paste_clipboard = clipboard.clone();
     Services {
         copy_html: Some(Box::new(move |html, text| {
+            let mut clipboard = clipboard.borrow_mut();
             if clipboard.is_none() {
-                clipboard = Some(arboard::Clipboard::new().map_err(|e| e.to_string())?);
+                *clipboard = Some(arboard::Clipboard::new().map_err(|e| e.to_string())?);
             }
             clipboard.as_mut().ok_or("clipboard unavailable")?.set_html(html, Some(text)).map_err(|e| e.to_string())
         })),
+        paste_html: Some(Box::new(move || {
+            let mut clipboard = paste_clipboard.try_borrow_mut().ok()?;
+            if clipboard.is_none() {
+                *clipboard = arboard::Clipboard::new().ok();
+            }
+            clipboard.as_mut()?.get().html().ok()
+        })),
         pick_open: Some(Box::new(|| {
             rfd::FileDialog::new()
-                .add_filter("Spreadsheets", &["xlsx", "xlsm", "xlsb", "ods", "csv", "tsv", "txt", "json"])
+                .add_filter("Spreadsheets", &["xlsx", "xlsm", "xls", "xlsb", "ods", "csv", "tsv", "txt", "json"])
                 .add_filter("Excel Workbook", &["xlsx", "xlsm"])
+                .add_filter("Excel 97-2003 Workbook (import)", &["xls"])
                 .add_filter("Excel Binary Workbook (data import)", &["xlsb"])
                 .add_filter("OpenDocument Spreadsheet (data import)", &["ods"])
                 .add_filter("CSV", &["csv"])
@@ -170,30 +172,44 @@ fn services() -> Services {
                 .and_then(|p| p.to_str().map(str::to_string))
         })),
         pick_save: Some(Box::new(|suggested: &str| {
-            let stem = std::path::Path::new(suggested).file_stem().and_then(|s| s.to_str()).unwrap_or("Book1").to_string();
-            rfd::FileDialog::new()
-                .set_file_name(format!("{stem}.xlsx"))
-                .add_filter("Excel Workbook (.xlsx)", &["xlsx"])
-                .add_filter("CSV UTF-8 (.csv)", &["csv"])
-                .add_filter("Web Page (.html)", &["html"])
-                .save_file()
-                .and_then(|p| p.to_str().map(str::to_string))
+            let path = std::path::Path::new(suggested);
+            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("Book1").to_string();
+            // The suggested name's type (an export asks for .pdf, .csv or .html) comes first.
+            const TYPES: [(&str, &str); 4] =
+                [("Excel Workbook (.xlsx)", "xlsx"), ("CSV UTF-8 (.csv)", "csv"), ("Web Page (.html)", "html"), ("PDF (.pdf)", "pdf")];
+            let ext = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).filter(|e| TYPES.iter().any(|(_, x)| x == e));
+            let ext = ext.unwrap_or_else(|| "xlsx".to_string());
+            let mut dialog = rfd::FileDialog::new().set_file_name(format!("{stem}.{ext}"));
+            for (label, x) in TYPES.iter().filter(|(_, x)| *x == ext).chain(TYPES.iter().filter(|(_, x)| *x != ext)) {
+                dialog = dialog.add_filter(*label, &[*x]);
+            }
+            dialog.save_file().and_then(|p| p.to_str().map(str::to_string))
         })),
-        open_url: Some(Box::new(|url: &str| {
-            let cmd = if cfg!(target_os = "macos") {
-                "open"
-            } else if cfg!(windows) {
-                "explorer"
-            } else {
-                "xdg-open"
-            };
-            let _ = std::process::Command::new(cmd).arg(url).spawn();
-        })),
+        open_url: Some(Box::new(|url: &str| open_with_system(url))),
+        printers: Some(print::discover()),
+        print_native: Some(print::submit()),
         ..Default::default()
     }
 }
 
+/// Opens a URL or file with the system's default application.
+fn open_with_system(target: &str) {
+    let cmd = if cfg!(target_os = "macos") {
+        "open"
+    } else if cfg!(windows) {
+        "explorer"
+    } else {
+        "xdg-open"
+    };
+    if let Err(e) = std::process::Command::new(cmd).arg(target).spawn() {
+        log::warn!("{cmd} {target}: {e}");
+    }
+}
+
 fn icon() -> Option<egui::IconData> {
+    #[cfg(target_os = "macos")]
+    let bytes = include_bytes!("../../../assets/app-icon/gridcraft-macos-512.png");
+    #[cfg(not(target_os = "macos"))]
     let bytes = include_bytes!("../../../assets/app-icon/hicolor/256x256/apps/ai.storyteller.gridcraft.png");
     let img = image::load_from_memory(bytes).ok()?.to_rgba8();
     Some(egui::IconData { width: img.width(), height: img.height(), rgba: img.into_raw() })
@@ -259,24 +275,25 @@ fn main() -> eframe::Result<()> {
         }
     }
     let mut session = Session::new();
-    load_session_prefs(&mut session);
     if let Some(s) = &sample
         && let Err(e) = session.execute("file.new", json!({"sample": s}))
     {
         log::warn!("sample {s}: {e}");
     }
-    for f in &files {
-        if let Err(e) = session.execute("file.open", json!({"path": f})) {
-            log::warn!("{f}: {e}");
-        }
-    }
     if session.documents().is_empty() {
         session.new_workbook();
     }
     let mut app = SheetApp::new(session, services());
-    app.after_engine(); // Show warnings from files opened on the command line.
+    app.watch_desktop_theme();
+    app.after_engine(); // Show warnings from the sample.
     let control_port = control_port;
-    load_ui_prefs(&mut app);
+    load_prefs(&mut app);
+    // Files named on the command line (a double-click on Windows and Linux) open as File › Open
+    // opens them: a password-protected one asks for its password, and errors are shown, not
+    // only logged. Each replaces the untouched blank Book1, as a file opened from Finder does.
+    for f in &files {
+        app.open_path(f);
+    }
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("GridCraft")
         .with_inner_size([1440.0, 900.0])
@@ -290,102 +307,65 @@ fn main() -> eframe::Result<()> {
         viewport = viewport.with_icon(i);
     }
     let options = eframe::NativeOptions { viewport, ..Default::default() };
-    // Before eframe creates the wgpu instance: default Windows to DirectX 12 only (see graphics.rs).
+    // Before eframe creates the wgpu instance: Windows starts on DirectX 12, or OpenGL when
+    // DirectX 12 has no GPU driver, and never touches Vulkan unless asked (see graphics.rs).
     #[cfg(target_os = "windows")]
-    let options = {
+    let backend_override = eframe::wgpu::Backends::from_env();
+    #[cfg(target_os = "windows")]
+    let (options, first_backends) = {
         let mut options = options;
-        graphics::configure(&mut options, eframe::wgpu::Backends::from_env());
-        options
+        let backends = graphics::configure(&mut options, backend_override);
+        (options, backends)
     };
+    #[cfg(target_os = "windows")]
+    let retry_options = options.clone();
     // Registered before the event loop starts, so it catches the Finder event that launched us as
     // well as later ones. Lives until the event loop returns; the app creator only borrows it.
     #[cfg(target_os = "macos")]
     let apple_events = apple_events::AppleEvents::install();
     #[cfg(target_os = "macos")]
     let apple_events = &apple_events;
-    eframe::run_native(
-        "GridCraft",
-        options,
-        Box::new(move |cc| {
-            SheetApp::setup_context(&cc.egui_ctx, app.ui.dark);
-            if let Some(port) = control_port {
-                match control_server::start(port, cc.egui_ctx.clone()) {
-                    Ok(rx) => app.control_rx = Some(rx),
-                    Err(e) => log::error!("control channel on port {port}: {e}"),
+    // The app waits here until a start gets as far as creating it; a start that fails before
+    // (no graphics adapter, device or surface) leaves it here for the next attempt.
+    let pending = std::cell::Cell::new(Some(app));
+    let run = |options: eframe::NativeOptions| {
+        eframe::run_native(
+            "GridCraft",
+            options,
+            Box::new(|cc| {
+                let Some(mut app) = pending.take() else {
+                    return Err("the app was already created".into());
+                };
+                SheetApp::setup_context_for_language(&cc.egui_ctx, app.ui.dark, app.ui.language);
+                if let Some(port) = control_port {
+                    match control_server::start(port, cc.egui_ctx.clone()) {
+                        Ok(rx) => app.control_rx = Some(rx),
+                        Err(e) => log::error!("control channel on port {port}: {e}"),
+                    }
                 }
-            }
-            Ok(Box::new(App(
-                app,
-                #[cfg(target_os = "macos")]
-                None,
-                #[cfg(target_os = "macos")]
-                apple_events.connect(&cc.egui_ctx),
-            )))
-        }),
-    )
-}
-
-#[cfg(test)]
-mod tests {
-    #![allow(clippy::unwrap_used)]
-    use super::*;
-
-    fn temp_dir(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("gridcraft-app-test-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        dir
+                Ok(Box::new(App(
+                    app,
+                    #[cfg(target_os = "macos")]
+                    None,
+                    #[cfg(target_os = "macos")]
+                    apple_events.connect(&cc.egui_ctx),
+                )))
+            }),
+        )
+    };
+    let result = run(options);
+    // A graphics error before the app existed: start once more with the other backend (eframe
+    // reuses its event loop for the second run). Errors after that, or from winit, are returned.
+    #[cfg(target_os = "windows")]
+    if let Err(eframe::Error::Wgpu(e)) = &result
+        && let Some(app) = pending.take()
+        && let Some(backends) = graphics::fallback_backends(backend_override, first_backends)
+    {
+        log::error!("graphics: the renderer didn't start on {first_backends:?} ({e}); trying {backends:?}");
+        pending.set(Some(app));
+        let mut options = retry_options;
+        graphics::configure_backends(&mut options, backends);
+        return run(options);
     }
-
-    #[test]
-    fn language_prefs_survive_prefs_json() {
-        let dir = temp_dir("prefs");
-        let p = Prefs {
-            ui_language: "pt-BR".into(),
-            formula_language: "en-US".into(),
-            regional_format: "de-DE".into(),
-            use_system_separators: false,
-            decimal_separator: ",".into(),
-            thousands_separator: ".".into(),
-            ..Prefs::default()
-        };
-        write_prefs(&dir, &p);
-        let text = std::fs::read_to_string(dir.join("prefs.json")).unwrap();
-        for field in ["uiLanguage", "formulaLanguage", "regionalFormat", "useSystemSeparators", "decimalSeparator", "thousandsSeparator"] {
-            assert!(text.contains(field), "{field} missing from {text}");
-        }
-        let back = read_prefs(&dir).unwrap();
-        assert_eq!(back.ui_language, "pt-BR");
-        assert_eq!(back.formula_language, "en-US");
-        assert_eq!(back.regional_format, "de-DE");
-        assert!(!back.use_system_separators);
-        assert_eq!((back.decimal_separator.as_str(), back.thousands_separator.as_str()), (",", "."));
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn prefs_file_from_an_older_version_gets_system_defaults() {
-        let dir = temp_dir("old-prefs");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("prefs.json"), r#"{"autocomplete": false}"#).unwrap();
-        let p = read_prefs(&dir).unwrap();
-        assert!(!p.autocomplete);
-        assert_eq!((p.ui_language.as_str(), p.formula_language.as_str(), p.regional_format.as_str()), ("system", "followUi", "system"));
-        assert!(p.use_system_separators);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn saved_choice_wins_over_the_system_locale_and_system_follows_it() {
-        let mut saved = Session::new();
-        saved.prefs.regional_format = "pt-BR".into();
-        saved.set_system_locale("en-US");
-        assert_eq!(saved.locale().regional.tag, "pt-BR");
-
-        let mut follows = Session::new();
-        follows.set_system_locale("de_DE.UTF-8");
-        assert_eq!(follows.locale().regional.tag, "de-DE");
-        // The system language changing between starts is picked up again.
-        follows.set_system_locale("fr-FR");
-        assert_eq!(follows.locale().regional.tag, "fr-FR");
-    }
+    result
 }

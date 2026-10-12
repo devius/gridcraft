@@ -16,7 +16,6 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use gridcraft_core::{CellError, DateSystem, Value};
-use gridcraft_locale::{INVARIANT, Locale};
 
 /// Builds a [`FnSpec`] whose implementation returns `Result<Value, CellError>`.
 ///
@@ -64,9 +63,9 @@ macro_rules! f {
 pub(crate) mod criteria;
 pub(crate) mod database;
 pub(crate) mod date;
-mod docs;
 pub(crate) mod dynamic;
 pub(crate) mod engineering;
+pub(crate) mod ets;
 pub(crate) mod financial;
 pub(crate) mod info;
 pub(crate) mod lift;
@@ -77,7 +76,7 @@ pub(crate) mod stat;
 pub(crate) mod text;
 pub(crate) mod util;
 
-pub use docs::{FnDoc, docs, is_special};
+pub use ets::Timeline;
 pub use stat::{aggregate_values, aggregate_values_k};
 
 /// An evaluated argument. Ranges arrive as `Value::Array` (blank cells = `Value::Empty`) with
@@ -106,12 +105,6 @@ pub trait Ctx {
     fn now_serial(&self) -> f64;
     /// Uniform in [0, 1).
     fn random(&mut self) -> f64;
-    /// Language and region of the workbook: how text is read as numbers and numbers are written
-    /// as text, which `TRUE`/`FALSE` and `CELL` keywords are accepted. Invariant en-US unless
-    /// the host overrides it.
-    fn locale(&self) -> &Locale {
-        &INVARIANT
-    }
 }
 
 pub type FnImpl = fn(&[Arg], &mut dyn Ctx) -> Value;
@@ -131,6 +124,8 @@ pub enum Category {
     Compatibility,
     Web,
     Cube,
+    /// Excel's "Add-in and Automation" category (EUROCONVERT).
+    AddIn,
 }
 
 pub struct FnSpec {
@@ -165,6 +160,11 @@ impl FnSpec {
             None => self.scalar_args.last().copied().unwrap_or(false),
         }
     }
+
+    /// Whether a call with `n` arguments is valid (Excel allows at most 255).
+    pub fn accepts(&self, n: usize) -> bool {
+        (self.min_args..=self.max_args).contains(&n) && n <= 255
+    }
 }
 
 /// Variadic marker for `max_args`.
@@ -177,6 +177,7 @@ fn registry() -> &'static (Vec<FnSpec>, HashMap<&'static str, usize>) {
         for list in [
             math::specs(),
             stat::specs(),
+            ets::specs(),
             text::specs(),
             date::specs(),
             lookup::specs(),
@@ -219,14 +220,11 @@ pub fn all() -> &'static [FnSpec] {
 
 /// Calls a function with array lifting applied. Wrong arity gives `#VALUE!`.
 pub fn call(spec: &FnSpec, args: &[Arg], ctx: &mut dyn Ctx) -> Value {
-    if args.len() < spec.min_args || args.len() > spec.max_args || args.len() > 255 {
+    if !spec.accepts(args.len()) {
         return Value::Error(CellError::Value);
     }
     lift::call_lifted(spec, args, ctx)
 }
-
-#[cfg(test)]
-mod locale_tests;
 
 #[cfg(test)]
 mod tests {
