@@ -1,10 +1,13 @@
 # Preview build for testers (fork only, not for upstream): the Windows x64 MSI from the
-# ka-preview branch, unsigned. Steps copied from release.yml's windows job.
+# ka-preview branch, unsigned. Steps and pins follow the windows job of upstream's release workflow
+# (storytold/craft-common-actions .github/workflows/release.yml, which release.yml calls).
 name: Windows preview
 on:
   push:
     branches: [ka-preview]
   workflow_dispatch:
+permissions:
+  contents: read
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
@@ -23,8 +26,9 @@ jobs:
           repository: storytold/craft-fonts
           ref: abb83316d96aa59c1cf64784289e378fe9fa5695
           path: craft-fonts
-      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
         with:
+          toolchain: stable
           targets: x86_64-pc-windows-msvc
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
