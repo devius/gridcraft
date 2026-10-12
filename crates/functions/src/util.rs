@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use gridcraft_core::{Array, CellError, Value};
 
-use crate::{Arg, Ctx};
+use crate::Arg;
 
 pub(crate) type R<T> = Result<T, CellError>;
 
@@ -54,45 +54,29 @@ pub(crate) fn has(args: &[Arg], i: usize) -> bool {
     matches!(args.get(i), Some(a) if !matches!(a.value, Value::Empty) || a.from_ref)
 }
 
-/// Number coercion of a value as the workbook's region reads it: empty = 0, TRUE = 1, numeric
-/// text parses (`1,5` in pt-BR), other text = `#VALUE!`. Dates count in the workbook's system.
-pub(crate) fn to_num(c: &dyn Ctx, v: &Value) -> R<f64> {
-    v.to_number_in(&c.locale().regional, c.date_system())
-}
-
-/// Text coercion as `&` does it in the workbook's language and region.
-pub(crate) fn to_str(c: &dyn Ctx, v: &Value) -> R<String> {
-    v.to_text_in(c.locale())
-}
-
-/// Boolean coercion; text `TRUE`/`FALSE` in the workbook's formula language.
-pub(crate) fn to_flag(c: &dyn Ctx, v: &Value) -> R<bool> {
-    v.to_bool_in(c.locale().formula)
-}
-
 /// Number coercion for a scalar parameter: empty = 0, TRUE = 1, numeric text parses.
-pub(crate) fn num(c: &dyn Ctx, args: &[Arg], i: usize) -> R<f64> {
+pub(crate) fn num(args: &[Arg], i: usize) -> R<f64> {
     let a = arg(args, i)?;
-    to_num(c, &scalar(a))
+    scalar(a).to_number()
 }
 
 /// Optional number: `default` when missing, otherwise coerced (an explicit empty is 0).
-pub(crate) fn opt_num(c: &dyn Ctx, args: &[Arg], i: usize, default: f64) -> R<f64> {
+pub(crate) fn opt_num(args: &[Arg], i: usize, default: f64) -> R<f64> {
     match args.get(i) {
         None => Ok(default),
-        Some(a) => to_num(c, &scalar(a)),
+        Some(a) => scalar(a).to_number(),
     }
 }
 
 /// Integer coercion (truncates toward zero). Values beyond ±2^53 give `#NUM!`.
-pub(crate) fn int(c: &dyn Ctx, args: &[Arg], i: usize) -> R<i64> {
-    to_int(num(c, args, i)?)
+pub(crate) fn int(args: &[Arg], i: usize) -> R<i64> {
+    to_int(num(args, i)?)
 }
 
-pub(crate) fn opt_int(c: &dyn Ctx, args: &[Arg], i: usize, default: i64) -> R<i64> {
+pub(crate) fn opt_int(args: &[Arg], i: usize, default: i64) -> R<i64> {
     match args.get(i) {
         None => Ok(default),
-        Some(_) => int(c, args, i),
+        Some(_) => int(args, i),
     }
 }
 
@@ -104,21 +88,21 @@ pub(crate) fn to_int(n: f64) -> R<i64> {
 }
 
 /// Text coercion for a scalar parameter.
-pub(crate) fn text(c: &dyn Ctx, args: &[Arg], i: usize) -> R<String> {
+pub(crate) fn text(args: &[Arg], i: usize) -> R<String> {
     let a = arg(args, i)?;
-    to_str(c, &scalar(a))
+    scalar(a).to_text()
 }
 
 /// Boolean coercion for a scalar parameter.
-pub(crate) fn boolean(c: &dyn Ctx, args: &[Arg], i: usize) -> R<bool> {
+pub(crate) fn boolean(args: &[Arg], i: usize) -> R<bool> {
     let a = arg(args, i)?;
-    to_flag(c, &scalar(a))
+    scalar(a).to_bool()
 }
 
-pub(crate) fn opt_bool(c: &dyn Ctx, args: &[Arg], i: usize, default: bool) -> R<bool> {
+pub(crate) fn opt_bool(args: &[Arg], i: usize, default: bool) -> R<bool> {
     match args.get(i) {
         None => Ok(default),
-        Some(a) => to_flag(c, &scalar(a)),
+        Some(a) => scalar(a).to_bool(),
     }
 }
 
@@ -165,7 +149,7 @@ pub(crate) fn flatten(args: &[Arg]) -> Vec<Value> {
 /// Numbers for aggregate functions (SUM, AVERAGE, MIN, STDEV…): inside references and arrays
 /// only numbers count (text, booleans and blanks are skipped); direct scalar arguments are
 /// coerced ("3" → 3, TRUE → 1, other text → `#VALUE!`). Errors propagate.
-pub(crate) fn numbers(c: &dyn Ctx, args: &[Arg]) -> R<Vec<f64>> {
+pub(crate) fn numbers(args: &[Arg]) -> R<Vec<f64>> {
     let mut out = Vec::new();
     for a in args {
         match &a.value {
@@ -182,7 +166,7 @@ pub(crate) fn numbers(c: &dyn Ctx, args: &[Arg]) -> R<Vec<f64>> {
             Value::Number(n) => out.push(*n),
             _ if a.from_ref => {}
             Value::Empty => {}
-            v => out.push(to_num(c, v)?),
+            v => out.push(v.to_number()?),
         }
     }
     Ok(out)
@@ -191,7 +175,7 @@ pub(crate) fn numbers(c: &dyn Ctx, args: &[Arg]) -> R<Vec<f64>> {
 /// Numbers for the "A" aggregates (AVERAGEA, MAXA, STDEVA…): inside references and arrays text
 /// counts as 0 and booleans as 1/0, blanks are skipped; direct arguments coerce as in
 /// [`numbers`].
-pub(crate) fn numbers_a(c: &dyn Ctx, args: &[Arg]) -> R<Vec<f64>> {
+pub(crate) fn numbers_a(args: &[Arg]) -> R<Vec<f64>> {
     let mut out = Vec::new();
     for a in args {
         match &a.value {
@@ -209,7 +193,7 @@ pub(crate) fn numbers_a(c: &dyn Ctx, args: &[Arg]) -> R<Vec<f64>> {
             Value::Error(e) => return Err(*e),
             Value::Empty => {}
             Value::Text(_) if a.from_ref => out.push(0.0),
-            v => out.push(to_num(c, v)?),
+            v => out.push(v.to_number()?),
         }
     }
     Ok(out)
@@ -217,7 +201,7 @@ pub(crate) fn numbers_a(c: &dyn Ctx, args: &[Arg]) -> R<Vec<f64>> {
 
 /// Numbers of a single array-like argument where only numbers count (text, booleans, blanks
 /// skipped), errors propagate. Used for data arrays of statistical functions.
-pub(crate) fn array_numbers(c: &dyn Ctx, v: &Value) -> R<Vec<f64>> {
+pub(crate) fn array_numbers(v: &Value) -> R<Vec<f64>> {
     let mut out = Vec::new();
     match v {
         Value::Array(arr) => {
@@ -232,7 +216,7 @@ pub(crate) fn array_numbers(c: &dyn Ctx, v: &Value) -> R<Vec<f64>> {
         Value::Number(n) => out.push(*n),
         Value::Error(e) => return Err(*e),
         Value::Empty => {}
-        other => out.push(to_num(c, other)?),
+        other => out.push(other.to_number()?),
     }
     Ok(out)
 }
@@ -302,7 +286,6 @@ pub(crate) fn to_sig_digits(x: f64, sig: usize) -> f64 {
 #[cfg(test)]
 pub(crate) mod testutil {
     use gridcraft_core::{Array, CellError, DateSystem, Value};
-    use gridcraft_locale::Locale;
 
     use crate::{Arg, Ctx};
 
@@ -310,19 +293,15 @@ pub(crate) mod testutil {
     pub struct TestCtx {
         pub state: u64,
         pub sys: DateSystem,
-        pub locale: Locale,
     }
     impl Default for TestCtx {
         fn default() -> Self {
-            TestCtx { state: 0x2545_F491_4F6C_DD1D, sys: DateSystem::D1900, locale: Locale::default() }
+            TestCtx { state: 0x2545_F491_4F6C_DD1D, sys: DateSystem::D1900 }
         }
     }
     impl Ctx for TestCtx {
         fn date_system(&self) -> DateSystem {
             self.sys
-        }
-        fn locale(&self) -> &Locale {
-            &self.locale
         }
         fn now_serial(&self) -> f64 {
             46302.5
@@ -337,27 +316,8 @@ pub(crate) mod testutil {
 
     /// Calls a registered function by name with literal arguments.
     pub fn ev(name: &str, args: Vec<Arg>) -> Value {
-        ev_in(Locale::default(), name, args)
-    }
-    /// [`ev`] in a workbook with the given language and region.
-    pub fn ev_in(locale: Locale, name: &str, args: Vec<Arg>) -> Value {
         let spec = crate::lookup(name).unwrap_or_else(|| panic!("function {name} not registered"));
-        crate::call(spec, &args, &mut TestCtx { locale, ..TestCtx::default() })
-    }
-    /// [`ev`] in a workbook using the 1904 date system.
-    pub fn ev_1904(name: &str, args: Vec<Arg>) -> Value {
-        let spec = crate::lookup(name).unwrap_or_else(|| panic!("function {name} not registered"));
-        crate::call(spec, &args, &mut TestCtx { sys: DateSystem::D1904, ..TestCtx::default() })
-    }
-    /// Portuguese (Brazil) interface, formulas and region.
-    pub fn pt_br() -> Locale {
-        let lang = gridcraft_locale::language("pt-BR").expect("pt-BR language data");
-        Locale::new(lang, lang, *gridcraft_locale::region("pt-BR").expect("pt-BR region data"))
-    }
-    /// Japanese interface and formulas with the Japanese region.
-    pub fn ja_jp() -> Locale {
-        let lang = gridcraft_locale::language("ja-JP").expect("ja-JP language data");
-        Locale::new(lang, lang, *gridcraft_locale::region("ja-JP").expect("ja-JP region data"))
+        crate::call(spec, &args, &mut TestCtx::default())
     }
     /// Literal number argument.
     pub fn n(x: f64) -> Arg {
@@ -465,11 +425,10 @@ mod tests {
     #[test]
     fn aggregate_numbers() {
         let arr = Value::from(Array::new(1, 4, vec![Value::Number(1.0), Value::from("2"), Value::Bool(true), Value::Empty]).unwrap());
-        let ctx = testutil::TestCtx::default();
-        assert_eq!(numbers(&ctx, &[Arg::reference(arr.clone())]).unwrap(), vec![1.0]);
-        assert_eq!(numbers_a(&ctx, &[Arg::reference(arr)]).unwrap(), vec![1.0, 0.0, 1.0]);
-        assert_eq!(numbers(&ctx, &[Arg::val("3"), Arg::val(true)]).unwrap(), vec![3.0, 1.0]);
-        assert_eq!(numbers(&ctx, &[Arg::val("x")]), Err(CellError::Value));
-        assert_eq!(numbers(&ctx, &[Arg::reference("x")]).unwrap(), Vec::<f64>::new());
+        assert_eq!(numbers(&[Arg::reference(arr.clone())]).unwrap(), vec![1.0]);
+        assert_eq!(numbers_a(&[Arg::reference(arr)]).unwrap(), vec![1.0, 0.0, 1.0]);
+        assert_eq!(numbers(&[Arg::val("3"), Arg::val(true)]).unwrap(), vec![3.0, 1.0]);
+        assert_eq!(numbers(&[Arg::val("x")]), Err(CellError::Value));
+        assert_eq!(numbers(&[Arg::reference("x")]).unwrap(), Vec::<f64>::new());
     }
 }

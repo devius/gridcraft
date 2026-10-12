@@ -118,11 +118,7 @@ pub fn tool_definitions() -> Vec<Value> {
              docs with list_commands. Examples: {\"command\":\"cell.set\",\"params\":{\"cell\":\"B2\",\"input\":\"=SUM(A1:A9)\"}}; \
              {\"command\":\"home.bold\",\"params\":{\"range\":\"A1:C1\"}}; {\"command\":\"sheet.insert\"}; \
              {\"command\":\"data.removeDuplicates\",\"params\":{\"range\":\"A1:C20\"}}. Most commands act on the current selection \
-             when `range` is omitted. Programmatic calls never open dialogs: missing required params give an error. \
-             Language and regional format: `app.getInternational` reports them and `app.setLocale` changes them (e.g. \
-             {\"command\":\"app.setLocale\",\"params\":{\"uiLanguage\":\"pt-BR\",\"regionalFormat\":\"pt-BR\"}}); `app.languages` lists \
-             the choices. Stored formulas and `input` params are always canonical (English function names, `,` between arguments, `.` \
-             decimal); commands with an `inputLocal` or `…Local` param take the text as typed in the current language instead.",
+             when `range` is omitted. Programmatic calls never open dialogs: missing required params give an error.",
             obj(
                 json!({"command": string("Command id, e.g. \"cell.set\", \"home.fillColor\", \"insert.chart\""), "params": params_schema()}),
                 &["command"],
@@ -151,16 +147,13 @@ pub fn tool_definitions() -> Vec<Value> {
             "Read range",
             "Read cell values from a range as rows (2-D array). Numbers/booleans/strings are returned as JSON values, empty cells as \
              null, errors as {\"error\":\"#DIV/0!\"}. Without `range`, reads the sheet's used range. formulas:true returns formula \
-             text (\"=SUM(B2:B4)\") for formula cells (canonical English; with local:true the formulas are spelled in the current formula \
-             language and separators, e.g. \"=SOMA(B2:B4)\"); formatted:true returns the displayed text (\"$1,234.00\", \"12%\", or \
-             \"1.234,00\" under a pt-BR region).",
+             text (\"=SUM(B2:B4)\") for formula cells; formatted:true returns the displayed text (\"$1,234.00\", \"12%\").",
             obj(
                 json!({
                     "range": string(RANGE),
                     "sheet": string("Sheet name (default: the active sheet)"),
                     "formulas": boolean("Return formulas instead of computed values for formula cells"),
                     "formatted": boolean("Return display text with number formats applied"),
-                    "local": boolean("With formulas:true, return the formulas in the current formula language and separators"),
                 }),
                 &[],
             ),
@@ -171,15 +164,11 @@ pub fn tool_definitions() -> Vec<Value> {
             "Write range",
             "Write a 2-D array of values starting at the top-left cell of `range` (rows of cells). Numbers, booleans, null (clears) \
              and strings are accepted; strings starting with = are formulas (\"=SUM(B2:B4)\"), other strings are parsed like typed \
-             input (\"12%\", \"1/2/2024\", \"$5\"). With `local` true the strings are typed in the current language and regional \
-             format (`locale` overrides it, e.g. \"pt-BR\"); numbers and booleans stay as they are. One undo step. \
-             Example: {\"range\":\"A1\",\"values\":[[\"Item\",\"Cost\"],[\"Rent\",1200]]}.",
+             input (\"12%\", \"1/2/2024\", \"$5\"). One undo step. Example: {\"range\":\"A1\",\"values\":[[\"Item\",\"Cost\"],[\"Rent\",1200]]}.",
             obj(
                 json!({
                     "range": string("Top-left cell or range, e.g. \"A1\" or \"Sheet2!B3\""),
                     "values": {"type": "array", "description": "Rows of cell values", "items": {"type": "array", "items": {"type": ["string", "number", "boolean", "null"]}}},
-                    "local": {"type": "boolean", "description": "Read the strings as typed in the current language and regional format"},
-                    "locale": string("Language/region tag (e.g. \"pt-BR\") used when `local` is true; default: the session's"),
                 }),
                 &["range", "values"],
             ),
@@ -189,25 +178,17 @@ pub fn tool_definitions() -> Vec<Value> {
             "set_cell",
             "Set cell",
             "Enter one cell exactly as if typed: a number, text, or a formula starting with = (\"=AVERAGE(B2:B9)\"). \
-             Give `input` for canonical text (English function names, `,` separators, `.` decimals) or `inputLocal` for text typed in \
-             the current language and regional format (pt-BR: \"=MÉDIA(B2:B9)\", \"1,5\", \"10/10/2026\"); `locale` (e.g. \"pt-BR\") \
-             overrides the session language for that `inputLocal`. Dependent cells recalculate. Returns the command result; use \
-             get_cell to read the computed value.",
+             Dependent cells recalculate. Returns the command result; use get_cell to read the computed value.",
             obj(
-                json!({
-                    "cell": string("Cell, e.g. \"B7\" or \"Sheet2!C3\""),
-                    "input": string("Canonical typed input: number, text or =formula"),
-                    "inputLocal": string("Input as typed in the current (or `locale`) language: local function names, separators and dates"),
-                    "locale": string("Language/region tag for `inputLocal`, e.g. \"pt-BR\", \"de-DE\" (default: the session's)"),
-                }),
-                &["cell"],
+                json!({"cell": string("Cell, e.g. \"B7\" or \"Sheet2!C3\""), "input": string("Typed input: number, text or =formula")}),
+                &["cell", "input"],
             ),
             false,
         ),
         tool(
             "get_cell",
             "Get cell",
-            "Details of one cell: computed value and type, formula (canonical `formula` and `formulaLocal` in the current language), display text, raw input, spill range, style, merge, comment and hyperlink.",
+            "Details of one cell: computed value and type, formula, display text, raw input, spill range, style, merge, comment and hyperlink.",
             obj(json!({"cell": string("Cell, e.g. \"B7\" or \"Sheet2!C3\"")}), &["cell"]),
             true,
         ),
@@ -215,17 +196,10 @@ pub fn tool_definitions() -> Vec<Value> {
             "evaluate_formula",
             "Evaluate formula",
             "Evaluate a formula against the active sheet WITHOUT changing any cell, e.g. \"=SUM(B2:B10)/COUNT(B2:B10)\" or \
-             \"=VLOOKUP(\\\"x\\\",A:B,2,FALSE)\". `cell` sets the formula's position for relative references and ROW()/COLUMN(). \
-             Give `formula` in canonical form (English names, `,` separators) or `formulaLocal` as typed in the current language \
-             (pt-BR: \"=PROCV(\\\"x\\\";A:B;2;FALSO)\"); `locale` (e.g. \"pt-BR\") overrides the language for `formulaLocal`.",
+             \"=VLOOKUP(\\\"x\\\",A:B,2,FALSE)\". `cell` sets the formula's position for relative references and ROW()/COLUMN().",
             obj(
-                json!({
-                    "formula": string("Canonical formula text, with or without the leading ="),
-                    "formulaLocal": string("Formula as typed in the current (or `locale`) language, with or without the leading ="),
-                    "locale": string("Language/region tag for `formulaLocal`, e.g. \"pt-BR\" (default: the session's)"),
-                    "cell": string("Evaluate as if in this cell (default: active cell)"),
-                }),
-                &[],
+                json!({"formula": string("Formula text, with or without the leading ="), "cell": string("Evaluate as if in this cell (default: active cell)")}),
+                &["formula"],
             ),
             true,
         ),
@@ -246,8 +220,7 @@ pub fn tool_definitions() -> Vec<Value> {
             "Apply several formats to a range in one call: bold, italic, underline, font name/size, font color, fill color, number \
              format, horizontal alignment, wrap, borders. Colors are \"#RRGGBB\" (fontColor also \"auto\", fillColor also \"none\"). \
              numberFormat is a name (General, Number, Currency, Accounting, Comma, Percentage, Short Date, Long Date, Time, Fraction, \
-             Scientific, Text) or a canonical format code (\"#,##0.00\", \"0%\", \"yyyy-mm-dd\"); numberFormatLocal is a code as typed in \
-             the current language and region (pt-BR: \"#.##0,00\", \"dd/mm/aaaa\"). Each property runs one command; the result \
+             Scientific, Text) or a format code (\"#,##0.00\", \"0%\", \"yyyy-mm-dd\"). Each property runs one command; the result \
              lists them.",
             obj(
                 json!({
@@ -259,9 +232,7 @@ pub fn tool_definitions() -> Vec<Value> {
                     "fontSize": {"type": "number", "minimum": 1, "maximum": 409, "description": "Font size in points"},
                     "fontColor": color("Text color \"#RRGGBB\" or \"auto\""),
                     "fillColor": color("Background color \"#RRGGBB\" or \"none\""),
-                    "numberFormat": string("Number format name or canonical code"),
-                    "numberFormatLocal": string("Number format code as typed in the current (or `locale`) language and region"),
-                    "locale": string("Language/region tag for `numberFormatLocal`, e.g. \"pt-BR\" (default: the session's)"),
+                    "numberFormat": string("Number format name or code"),
                     "horizontalAlign": enumeration("Horizontal alignment", &["left", "center", "right", "justify"]),
                     "wrapText": boolean("Wrap text on/off"),
                     "borders": {
@@ -358,7 +329,7 @@ pub fn tool_definitions() -> Vec<Value> {
         tool(
             "open_workbook",
             "Open workbook",
-            "Open a workbook file (.xlsx, .xlsm, .xlsb, .ods, .csv, .tsv, .txt, .json) and make it active. XLSB and ODS import worksheet data and cached formula values only; check the returned warnings.",
+            "Open a workbook file (.xlsx, .xlsm, .xls, .xlsb, .ods, .csv, .tsv, .txt, .json) and make it active. Excel 97-2003 .xls imports values, formulas and number formats; XLSB and ODS import worksheet data and cached formula values only; check the returned warnings.",
             obj(json!({"path": string("File path")}), &["path"]),
             false,
         ),
@@ -395,7 +366,7 @@ pub fn tool_definitions() -> Vec<Value> {
         tool(
             "list_functions",
             "List functions",
-            "List worksheet functions: name (canonical, English), localName (as typed in the current formula language), category, signature and description. Filter with `search` (name or description) or `category`.",
+            "List worksheet functions: name, category, signature and description. Filter with `search` (name or description) or `category`.",
             obj(
                 json!({"search": string("Substring of the name or description"), "category": string("Category, e.g. \"Math & Trig\", \"Lookup & Reference\"")}),
                 &[],
@@ -496,17 +467,8 @@ fn format_range(b: &mut dyn Backend, a: &Args) -> Result<Value, String> {
     if let Some(v) = a.get("fillColor").and_then(Value::as_str) {
         steps.push(("home.fillColor", json!({"range": r, "color": v})));
     }
-    match (a.get("numberFormat").and_then(Value::as_str), a.get("numberFormatLocal").and_then(Value::as_str)) {
-        (Some(_), Some(_)) => return Err("give `numberFormat` or `numberFormatLocal`, not both".into()),
-        (Some(v), None) => steps.push(("home.numberFormat", json!({"range": r, "format": v}))),
-        (None, Some(v)) => {
-            let mut p = json!({"range": r, "numberFormatLocal": v});
-            if let Some(l) = a.get("locale").filter(|l| !l.is_null()) {
-                p["locale"] = l.clone();
-            }
-            steps.push(("home.numberFormat", p));
-        }
-        (None, None) => {}
+    if let Some(v) = a.get("numberFormat").and_then(Value::as_str) {
+        steps.push(("home.numberFormat", json!({"range": r, "format": v})));
     }
     if let Some(v) = a.get("horizontalAlign").and_then(Value::as_str) {
         let id = match v {
@@ -532,7 +494,7 @@ fn format_range(b: &mut dyn Backend, a: &Args) -> Result<Value, String> {
         Some(_) => return Err("`borders` must be a preset name or {preset, style?, color?}".into()),
     }
     if steps.is_empty() {
-        return Err("nothing to apply: give at least one of bold, italic, underline, fontName, fontSize, fontColor, fillColor, numberFormat, numberFormatLocal, horizontalAlign, wrapText, borders".into());
+        return Err("nothing to apply: give at least one of bold, italic, underline, fontName, fontSize, fontColor, fillColor, numberFormat, horizontalAlign, wrapText, borders".into());
     }
     let mut applied = Vec::new();
     for (id, p) in steps {
@@ -580,40 +542,6 @@ fn filter(b: &mut dyn Backend, a: &Args) -> Result<Value, String> {
     exec(b, "data.filterBy", pick(a, &["column", "values", "custom", "top", "blanks", "clear"]))
 }
 
-/// `cell.set` with canonical `input` or locally typed `inputLocal` (plus an optional `locale`).
-fn set_cell(b: &mut dyn Backend, a: &Args) -> Result<Value, String> {
-    let has = |k: &str| a.get(k).is_some_and(|v| !v.is_null());
-    match (has("input"), has("inputLocal")) {
-        (true, true) => return Err("give `input` or `inputLocal`, not both".into()),
-        (false, false) => return Err("missing argument: give `input` (canonical) or `inputLocal` (typed in the current language)".into()),
-        _ => {}
-    }
-    if has("locale") && !has("inputLocal") {
-        return Err("`locale` applies to `inputLocal` only".into());
-    }
-    exec(b, "cell.set", pick(a, &["cell", "input", "inputLocal", "locale"]))
-}
-
-/// `formulas.evaluate` of a canonical `formula` or a locally typed `formulaLocal` (plus an optional `locale`).
-fn evaluate_formula(b: &mut dyn Backend, a: &Args) -> Result<Value, String> {
-    let has = |k: &str| a.get(k).is_some_and(|v| !v.is_null());
-    let key = match (has("formula"), has("formulaLocal")) {
-        (true, true) => return Err("give `formula` or `formulaLocal`, not both".into()),
-        (false, false) => return Err("missing argument: give `formula` (canonical) or `formulaLocal` (typed in the current language)".into()),
-        (true, false) => "formula",
-        (false, true) => "formulaLocal",
-    };
-    if has("locale") && key == "formula" {
-        return Err("`locale` applies to `formulaLocal` only".into());
-    }
-    let text = req_str(a, key)?;
-    let formula = if text.starts_with('=') { text.to_string() } else { format!("={text}") };
-    let mut p = pick(a, &["cell", "locale"]);
-    p[key] = json!(formula);
-    let v = exec(b, "formulas.evaluate", p)?;
-    Ok(json!({key: formula, "result": v}))
-}
-
 fn save_workbook(b: &mut dyn Backend, a: &Args) -> Result<Value, String> {
     if a.get("path").and_then(Value::as_str).is_none() {
         let info = b.call("document.inspect", json!({}))?;
@@ -644,11 +572,18 @@ fn dispatch(b: &mut dyn Backend, name: &str, a: &Args) -> Result<Value, String> 
         }
         "list_commands" => b.call("engine.commands", pick(a, &["search"])),
         "inspect_workbook" => b.call("document.inspect", json!({})),
-        "read_range" => b.call("sheet.read", pick(a, &["range", "sheet", "formulas", "local", "formatted"])),
-        "write_range" => exec(b, "range.setValues", pick(a, &["range", "values", "local", "locale"])),
-        "set_cell" => set_cell(b, a),
+        "read_range" => b.call("sheet.read", pick(a, &["range", "sheet", "formulas", "formatted"])),
+        "write_range" => exec(b, "range.setValues", pick(a, &["range", "values"])),
+        "set_cell" => exec(b, "cell.set", pick(a, &["cell", "input"])),
         "get_cell" => exec(b, "cell.get", pick(a, &["cell"])),
-        "evaluate_formula" => evaluate_formula(b, a),
+        "evaluate_formula" => {
+            let f = req_str(a, "formula")?;
+            let formula = if f.starts_with('=') { f.to_string() } else { format!("={f}") };
+            let mut p = pick(a, &["cell"]);
+            p["formula"] = json!(formula);
+            let v = exec(b, "formulas.evaluate", p)?;
+            Ok(json!({"formula": formula, "result": v}))
+        }
         "select" => exec(b, "selection.set", pick(a, &["range", "active"])),
         "format_range" => format_range(b, a),
         "insert_chart" => exec(b, "insert.chart", pick(a, &["range", "type", "subtype", "title", "at"])),

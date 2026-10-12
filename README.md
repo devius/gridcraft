@@ -84,6 +84,7 @@
 - **Compatible.** XLSX is the native format: styles, themes, formulas (including dynamic arrays),
   tables, conditional formats, validation, comments, hyperlinks, charts, pictures, sparklines,
   PivotTables and print settings round-trip. CSV and TSV too.
+  Excel 97-2003 `.xls` workbooks open with their values, formulas and number formats (formatting and objects not yet).
   [XLSB worksheet data can be imported](docs/xlsb-import.md), using saved values instead of formulas.
   [ODS worksheet data can be imported](docs/ods-import.md), using saved values instead of formulas.
   [Static pictures can live inside cells](docs/cell-pictures.md), fitting their size and moving with the data.
@@ -93,9 +94,6 @@
   Flash Fill, data validation, outlining and subtotals.
 - **Fast.** Copy-on-write workbooks (undo snapshots are nearly free), incremental recalculation,
   and a virtualised grid that only lays out what's on screen.
-- **Multilingual.** The interface and the formula language in 12 languages, the way Excel does
-  it: `=SOMA(1,5;2)` in Portuguese, `=SUMME(1,5;2)` in German, `=СУММ(1,5;2)` in Russian,
-  `=SUM(1.5,2)` in English, with the same canonical file underneath.
 - **Agent-native.** Every ribbon button, menu item, dialog, keystroke and mouse gesture is a
   command that agents can run over a JSON control channel, an **MCP server**, or the CLI.
 - **Everywhere.** One Rust codebase for desktop and the web. No subscription, no licence server,
@@ -111,10 +109,8 @@ cargo run --release -p gridcraft -- --sample sales --control 7979   # + JSON con
 cargo xtask ci                                                 # fmt, clippy, tests, assets, layering, wasm
 ```
 
-Formulas are typed and shown the way Excel does in your language and region: function names follow
-the interface language (View → Interface language), separators the regional format (`=SOMA(1,5;2)`
-in Brazilian Portuguese). Workbooks, the clipboard and programmatic APIs keep canonical English
-syntax. See [localization parity](docs/localization-parity.md).
+Choose Español under View → Interface language for [Spanish formula names, decimal commas, and semicolon arguments](docs/formula-input.md).
+Workbooks, clipboard exchange, and programmatic APIs retain canonical English syntax.
 
 ### Web
 
@@ -147,8 +143,7 @@ Escape backs out one keytip level; Alt/F10 again exits keytips. Clicking, scroll
 or switching windows cancels navigation. Access keys do not start while editing text
 or using another dialog. This is initial support for these Home and legacy paths;
 other ribbon commands and full mouse-free navigation remain to be implemented.
-Browsers or desktop environments may reserve Alt/F10 for their own menus. The keytip letters
-are the English ones in every interface language.
+Browsers or desktop environments may reserve Alt/F10 for their own menus.
 
 ### Logs
 
@@ -187,11 +182,10 @@ egui frontend is a separate crate, so the UI can be swapped without touching the
 
 | Layer | Crates |
 |---|---|
-| L0 | `core` (addresses, values, errors, dates, input parsing) · `numfmt` (number format codes) · `locale` (formula languages and regional formats) |
+| L0 | `core` (addresses, values, errors, dates, input parsing) · `numfmt` (number format codes) |
 | L1 | `formula` (lexer, parser, printer, reference adjustment) · `functions` (worksheet function library) |
 | L2 | `model` (workbook, sheets, copy-on-write cells, styles, tables, charts…) · `calc` (dependency graph, evaluator, dynamic arrays) · `xlsx` (XLSX, CSV, plus XLSB and ODS data import) |
 | L3 | `chart` (toolkit-free chart layout and rendering) |
-| L4 | `l10n` (interface messages in Fluent, localized keyboard shortcuts) |
 | L5 | `engine` (session, commands, history, clipboard, fill, sort, filter, file I/O) |
 | L6 | `ui-egui` (Excel-style UI, control channel) · `mcp` (MCP server) |
 | L7 | `apps/gridcraft`, `apps/gridcraft-cli`, `apps/gridcraft-web` |
@@ -204,7 +198,7 @@ egui frontend is a separate crate, so the UI can be swapped without touching the
 
 GridCraft is in **alpha**: the core workflow works end to end, but depth, fidelity and file
 compatibility are still rough. It covers 89% of the Excel ribbon commands in our catalog
-([`docs/parity-checklist.md`](docs/parity-checklist.md)) and 501 of Excel's 523 worksheet functions
+([`docs/parity-checklist.md`](docs/parity-checklist.md)) and 513 of Excel's 523 worksheet functions
 ([`docs/function-parity.md`](docs/function-parity.md)); weighted by what Excel users rely on, we
 estimate it is about 50% ready for real work. Next up: XLSX fidelity on real-world files, very large
 workbooks and multi-threaded recalc, chart depth, text in every script, and `.xls` import. Stage,
@@ -237,8 +231,21 @@ $env:WGPU_BACKEND = "vulkan"
 Remove-Item Env:WGPU_BACKEND                     # restore the default for later launches
 ```
 
-An explicit `gl` override can bring the driver crash back on affected systems. The macOS, Linux
-and web backend defaults are unchanged.
+An explicit `gl` override can bring the driver crash back on affected systems, and `vulkan` can
+bring back a crash in some Intel UHD Graphics drivers (`igvk64.dll`, #120). The macOS, Linux and
+web backend defaults are unchanged.
+
+**If the app is slow on an older Windows PC, or DirectX 12 can't start:** when DirectX 12 finds no
+graphics card with a driver for it, it only offers Microsoft's software renderer, which draws every
+frame on the processor. In that case GridCraft uses OpenGL instead, without setting anything; if
+the first renderer fails to start, it tries the other one once. The log file records the choice
+(lines starting with `graphics:`). `WGPU_BACKEND` still overrides it (and then nothing else is
+tried), e.g. `$env:WGPU_BACKEND = "gl"` or `"dx12"`.
+
+DirectX 12 shaders are compiled with FXC, which is part of Windows, so no `dxcompiler.dll` or
+`dxil.dll` is needed, and a copy another program put on `PATH` can no longer stop the app at start
+("Parent device is lost", #339). `$env:WGPU_DX12_COMPILER = "dxc"` (or `"auto"`) selects wgpu's DXC
+handling again for troubleshooting.
 
 ### macOS
 

@@ -8,10 +8,11 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
-use crate::locale::content_fmt;
 use gridcraft_core::date::datetime_from_serial;
 use gridcraft_core::{CellError, CellRef, MAX_COLS, MAX_ROWS, RangeRef, Value};
 use gridcraft_model::*;
+
+use crate::pivot_calc::CalcSet;
 
 /// Largest source block read (cells).
 pub const MAX_SOURCE_CELLS: u64 = 10_000_000;
@@ -188,22 +189,10 @@ pub fn read_source(wb: &Workbook, text: &str, default_sheet: usize) -> Result<So
 
 // ---------------------------------------------------------------- items
 
-/// The stored, language-independent identity of the blank item in filters and collapsed lists.
-/// Only the displayed caption is translated.
-pub const BLANK_IDENT: &str = "(blank)";
-
-/// A label as stored in a filter or collapsed list: the blank caption in the UI language maps to
-/// [`BLANK_IDENT`]; anything else is unchanged.
-pub fn canonical_label(loc: &gridcraft_locale::Locale, label: &str) -> String {
-    if label.eq_ignore_ascii_case(loc.ui.content("blank")) { BLANK_IDENT.to_string() } else { label.to_string() }
-}
-
 #[derive(Clone, Debug)]
 struct Item {
     value: Value,
     label: String,
-    /// What filters and collapsed lists store for this item (the label, except for blanks).
-    ident: String,
     class: u8,
     num: f64,
     text: String,
@@ -227,7 +216,6 @@ fn make_item(wb: &Workbook, v: &Value, group: PivotDateGroup, fmt: &str, first: 
     let it = |value: Value, label: String, class: u8, num: f64, formatted: bool| Item {
         text: label.to_lowercase(),
         value,
-        ident: label.clone(),
         label,
         class,
         num,
@@ -235,12 +223,7 @@ fn make_item(wb: &Workbook, v: &Value, group: PivotDateGroup, fmt: &str, first: 
         formatted,
     };
     match v {
-        Value::Empty => {
-            let blank = wb.locale.ui.content("blank");
-            let mut item = it(Value::text(blank), blank.into(), 4, 0.0, false);
-            item.ident = BLANK_IDENT.into();
-            ("b".into(), item)
-        }
+        Value::Empty => ("b".into(), it(Value::text("(blank)"), "(blank)".into(), 4, 0.0, false)),
         Value::Number(n) => {
             if group != PivotDateGroup::None
                 && let Some(dt) = datetime_from_serial(wb.date_system, *n)
@@ -287,19 +270,11 @@ impl FieldItems {
     fn label(&self, i: u32) -> String {
         self.get(i).map(|x| x.label.clone()).unwrap_or_default()
     }
-    fn ident(&self, i: u32) -> String {
-        self.get(i).map(|x| x.ident.clone()).unwrap_or_default()
-    }
 }
 
-/// The label of a source value under a date grouping (for field lists).
+/// The label of a source value under a date grouping (for filters and field lists).
 pub fn item_label(wb: &Workbook, v: &Value, group: PivotDateGroup, fmt: &str) -> String {
     make_item(wb, v, group, fmt, 0).1.label
-}
-
-/// What a filter stores for a source value: its label, or [`BLANK_IDENT`] for an empty cell.
-pub fn item_ident(wb: &Workbook, v: &Value, group: PivotDateGroup, fmt: &str) -> String {
-    make_item(wb, v, group, fmt, 0).1.ident
 }
 
 /// Distinct item labels of a source column, sorted like the field list shows them.
@@ -409,21 +384,21 @@ impl Acc {
     }
 }
 
-/// Excel's caption verb for a function ("Sum of Sales"), in the UI language.
-pub fn func_caption(f: PivotFunc, loc: &gridcraft_locale::Locale) -> &'static str {
-    loc.ui.content(match f {
-        PivotFunc::Sum => "func_sum",
-        PivotFunc::Count => "func_count",
-        PivotFunc::Average => "func_average",
-        PivotFunc::Max => "func_max",
-        PivotFunc::Min => "func_min",
-        PivotFunc::Product => "func_product",
-        PivotFunc::CountNumbers => "func_count_numbers",
-        PivotFunc::StdDev => "func_stddev",
-        PivotFunc::StdDevP => "func_stddevp",
-        PivotFunc::Var => "func_var",
-        PivotFunc::VarP => "func_varp",
-    })
+/// Excel's caption verb for a function ("Sum of Sales").
+pub fn func_caption(f: PivotFunc) -> &'static str {
+    match f {
+        PivotFunc::Sum => "Sum",
+        PivotFunc::Count => "Count",
+        PivotFunc::Average => "Average",
+        PivotFunc::Max => "Max",
+        PivotFunc::Min => "Min",
+        PivotFunc::Product => "Product",
+        PivotFunc::CountNumbers => "Count Numbers",
+        PivotFunc::StdDev => "StdDev",
+        PivotFunc::StdDevP => "StdDevp",
+        PivotFunc::Var => "Var",
+        PivotFunc::VarP => "Varp",
+    }
 }
 
 // ---------------------------------------------------------------- trees
@@ -466,8 +441,8 @@ fn build_tree(paths: &[&[u32]], depth: usize, fields: &[&PivotField], items: &[F
     nodes
 }
 
-fn is_collapsed(field: &PivotField, ident: &str) -> bool {
-    field.collapsed_items.iter().any(|c| c.eq_ignore_ascii_case(ident))
+fn is_collapsed(field: &PivotField, label: &str) -> bool {
+    field.collapsed_items.iter().any(|c| c.eq_ignore_ascii_case(label))
 }
 
 fn collect_siblings(nodes: &[Node], prefix: &mut Vec<u32>, out: &mut HashMap<Vec<u32>, Vec<u32>>) {
@@ -530,6 +505,12 @@ pub struct Output {
     /// Rows above the body (report filters plus a blank row).
     pub body_offset: u32,
     pub width: u32,
+    /// Grid rows of the innermost (or collapsed) items: a PivotChart's categories.
+    pub chart_rows: Vec<u32>,
+    /// Grid columns of item (not total) values with their series names: a PivotChart's series.
+    pub chart_cols: Vec<(u32, String)>,
+    /// Grid column holding the innermost row labels (`None` without row fields).
+    pub label_col: Option<u32>,
 }
 
 impl Output {
@@ -573,6 +554,8 @@ enum LineKind {
 
 struct Line {
     kind: LineKind,
+    /// A category of a PivotChart: an innermost (or collapsed) item.
+    leaf: bool,
     path: Vec<u32>,
     values: bool,
     /// (column, value, indent, number format)
@@ -596,23 +579,13 @@ struct Ctx<'a> {
     rows: Vec<&'a PivotField>,
     row_items: Vec<FieldItems>,
     row_fmts: Vec<String>,
-    locale: gridcraft_locale::Locale,
 }
 
 impl Ctx<'_> {
-    /// "Apple Total": the subtotal caption for an item label.
-    fn subtotal_label(&self, label: &str) -> String {
-        content_fmt(&self.locale, "subtotal_group", &[("name", label), ("label", self.locale.ui.content("total"))])
-    }
-
     fn label_cell(&self, depth: usize, item: u32) -> (Value, Option<String>, String) {
         let Some(it) = self.row_items.get(depth).and_then(|fi| fi.get(item)) else { return (Value::Empty, None, String::new()) };
         let fmt = if it.formatted { self.row_fmts.get(depth).cloned() } else { None };
         (it.value.clone(), fmt, it.label.clone())
-    }
-
-    fn ident_of(&self, depth: usize, item: u32) -> String {
-        self.row_items.get(depth).map(|fi| fi.ident(item)).unwrap_or_default()
     }
 
     fn flatten(&self, nodes: &[Node], depth: usize, prefix: &mut Vec<u32>, out: &mut Vec<Line>) {
@@ -622,19 +595,26 @@ impl Ctx<'_> {
             prefix.push(node.item);
             let (v, fmt, label) = self.label_cell(depth, node.item);
             let (col, indent) = if outline { (depth, 0) } else { (0, depth.min(250) as u8) };
-            let collapsed = depth + 1 < n && self.rows.get(depth).is_some_and(|f| is_collapsed(f, &self.ident_of(depth, node.item)));
+            let collapsed = depth + 1 < n && self.rows.get(depth).is_some_and(|f| is_collapsed(f, &label));
             if depth + 1 >= n || collapsed || node.children.is_empty() {
-                out.push(Line { kind: LineKind::Item(depth + 1 < n), path: prefix.clone(), values: true, labels: vec![(col, v, indent, fmt)] });
+                out.push(Line {
+                    kind: LineKind::Item(depth + 1 < n),
+                    leaf: true,
+                    path: prefix.clone(),
+                    values: true,
+                    labels: vec![(col, v, indent, fmt)],
+                });
             } else {
                 let top = self.pt.subtotals && self.pt.subtotals_top;
-                out.push(Line { kind: LineKind::Item(true), path: prefix.clone(), values: top, labels: vec![(col, v, indent, fmt)] });
+                out.push(Line { kind: LineKind::Item(true), leaf: false, path: prefix.clone(), values: top, labels: vec![(col, v, indent, fmt)] });
                 self.flatten(&node.children, depth + 1, prefix, out);
                 if self.pt.subtotals && !self.pt.subtotals_top {
                     out.push(Line {
                         kind: LineKind::Subtotal,
+                        leaf: false,
                         path: prefix.clone(),
                         values: true,
-                        labels: vec![(col, Value::text(self.subtotal_label(&label)), indent, None)],
+                        labels: vec![(col, Value::text(format!("{label} Total")), indent, None)],
                     });
                 }
             }
@@ -656,17 +636,18 @@ impl Ctx<'_> {
             let (v, fmt, label) = self.label_cell(depth, node.item);
             let mut labels: Vec<(usize, Value, u8, Option<String>)> = if i == 0 { pending.to_vec() } else { vec![] };
             labels.push((depth, v, 0, fmt));
-            let collapsed = depth + 1 < n && self.rows.get(depth).is_some_and(|f| is_collapsed(f, &self.ident_of(depth, node.item)));
+            let collapsed = depth + 1 < n && self.rows.get(depth).is_some_and(|f| is_collapsed(f, &label));
             if depth + 1 >= n || collapsed || node.children.is_empty() {
-                out.push(Line { kind: LineKind::Item(false), path: prefix.clone(), values: true, labels });
+                out.push(Line { kind: LineKind::Item(false), leaf: true, path: prefix.clone(), values: true, labels });
             } else {
                 self.flatten_tabular(&node.children, depth + 1, prefix, &labels, out);
                 if self.pt.subtotals {
                     out.push(Line {
                         kind: LineKind::Subtotal,
+                        leaf: false,
                         path: prefix.clone(),
                         values: true,
-                        labels: vec![(depth, Value::text(self.subtotal_label(&label)), 0, None)],
+                        labels: vec![(depth, Value::text(format!("{label} Total")), 0, None)],
                     });
                 }
             }
@@ -687,8 +668,8 @@ fn flatten_cols(
     let n = fields.len();
     for node in nodes {
         prefix.push(node.item);
-        let ident = items.get(depth).map(|fi| fi.ident(node.item)).unwrap_or_default();
-        let collapsed = depth + 1 < n && fields.get(depth).is_some_and(|f| is_collapsed(f, &ident));
+        let label = items.get(depth).map(|fi| fi.label(node.item)).unwrap_or_default();
+        let collapsed = depth + 1 < n && fields.get(depth).is_some_and(|f| is_collapsed(f, &label));
         if depth + 1 >= n || collapsed || node.children.is_empty() {
             out.push(ColSpec { kind: ColKind::Leaf, path: prefix.clone() });
         } else {
@@ -703,13 +684,44 @@ fn flatten_cols(
 
 type AggMap = HashMap<(Vec<u32>, Vec<u32>), Vec<Acc>>;
 
+/// Where a value field's numbers come from.
+#[derive(Clone, Copy)]
+enum ValSrc {
+    /// A source column.
+    Col(usize),
+    /// A calculated field (index into the PivotTable's calculated fields).
+    Calc(usize),
+}
+
 /// Computes a PivotTable report from the workbook.
 pub fn compute(wb: &Workbook, pt: &PivotTable, pivot_sheet: usize) -> Result<Output, String> {
     let src = read_source(wb, &pt.source, pivot_sheet)?;
     let fmt_of = |c: usize| src.formats.get(c).cloned().unwrap_or_else(|| "General".into());
     let rows: Vec<(usize, &PivotField)> = pt.rows.iter().filter_map(|f| src.col(&f.source_col).map(|c| (c, f))).collect();
     let cols: Vec<(usize, &PivotField)> = pt.columns.iter().filter_map(|f| src.col(&f.source_col).map(|c| (c, f))).collect();
-    let vals: Vec<(usize, &PivotValue)> = pt.values.iter().filter_map(|v| src.col(&v.source_col).map(|c| (c, v))).collect();
+    // Value fields: a source column, or a calculated field evaluated on sums (see `pivot_calc`).
+    let calc = CalcSet::new(pt, &src.headers);
+    let vals: Vec<(ValSrc, &PivotValue)> = pt
+        .values
+        .iter()
+        .filter_map(|v| match src.col(&v.source_col) {
+            Some(c) => Some((ValSrc::Col(c), v)),
+            None => calc.index(&v.source_col).map(|i| (ValSrc::Calc(i), v)),
+        })
+        .collect();
+    // Source columns summed for the calculated fields, accumulated after the value fields.
+    let mut extra: Vec<usize> = Vec::new();
+    for (vs, _) in &vals {
+        if let ValSrc::Calc(i) = vs {
+            for name in calc.source_refs(*i) {
+                if let Some(c) = src.col(&name)
+                    && !extra.contains(&c)
+                {
+                    extra.push(c);
+                }
+            }
+        }
+    }
     if rows.len() + cols.len() > MAX_AXIS_FIELDS {
         return Err(format!("A PivotTable can have at most {MAX_AXIS_FIELDS} row and column fields."));
     }
@@ -746,8 +758,8 @@ pub fn compute(wb: &Workbook, pt: &PivotTable, pivot_sheet: usize) -> Result<Out
     'rec: for (ri, rec) in src.rows.iter().enumerate() {
         for ((c, f, g, _), fmt) in filters.iter().zip(filter_fmts.iter()) {
             if let Some(sel) = &f.selected {
-                let ident = item_ident(wb, rec.get(*c).unwrap_or(&Value::Empty), *g, fmt);
-                if !sel.iter().any(|s| s.eq_ignore_ascii_case(&ident)) {
+                let label = item_label(wb, rec.get(*c).unwrap_or(&Value::Empty), *g, fmt);
+                if !sel.iter().any(|s| s.eq_ignore_ascii_case(&label)) {
                     continue 'rec;
                 }
             }
@@ -765,8 +777,13 @@ pub fn compute(wb: &Workbook, pt: &PivotTable, pivot_sheet: usize) -> Result<Out
         }
         for a in 0..=rp.len() {
             for b in 0..=cp.len() {
-                let e = aggs.entry((rp[..a].to_vec(), cp[..b].to_vec())).or_insert_with(|| vec![Acc::default(); k]);
-                for (acc, (c, _)) in e.iter_mut().zip(vals.iter()) {
+                let e = aggs.entry((rp[..a].to_vec(), cp[..b].to_vec())).or_insert_with(|| vec![Acc::default(); k + extra.len()]);
+                for (acc, (vs, _)) in e.iter_mut().zip(vals.iter()) {
+                    if let ValSrc::Col(c) = vs {
+                        acc.add(rec.get(*c).unwrap_or(&Value::Empty));
+                    }
+                }
+                for (acc, c) in e.iter_mut().skip(k).zip(extra.iter()) {
                     acc.add(rec.get(*c).unwrap_or(&Value::Empty));
                 }
             }
@@ -789,10 +806,10 @@ pub fn compute(wb: &Workbook, pt: &PivotTable, pivot_sheet: usize) -> Result<Out
     collect_siblings(&row_tree, &mut Vec::new(), &mut siblings);
     let level0: Vec<u32> = row_tree.iter().map(|n| n.item).collect();
 
-    let ctx = Ctx { pt, rows: row_fields.clone(), row_items, row_fmts: row_fmts.clone(), locale: *wb.locale };
+    let ctx = Ctx { pt, rows: row_fields.clone(), row_items, row_fmts: row_fmts.clone() };
     let mut lines: Vec<Line> = Vec::new();
     if rows.is_empty() {
-        lines.push(Line { kind: LineKind::Item(false), path: vec![], values: true, labels: vec![] });
+        lines.push(Line { kind: LineKind::Item(false), leaf: true, path: vec![], values: true, labels: vec![] });
     } else {
         if pt.layout == PivotLayout::Tabular {
             ctx.flatten_tabular(&row_tree, 0, &mut Vec::new(), &[], &mut lines);
@@ -802,9 +819,10 @@ pub fn compute(wb: &Workbook, pt: &PivotTable, pivot_sheet: usize) -> Result<Out
         if pt.grand_totals_cols {
             lines.push(Line {
                 kind: LineKind::Grand,
+                leaf: false,
                 path: vec![],
                 values: true,
-                labels: vec![(0, Value::text(wb.locale.ui.content("grand_total")), 0, None)],
+                labels: vec![(0, Value::text("Grand Total"), 0, None)],
             });
         }
     }
@@ -857,10 +875,7 @@ pub fn compute(wb: &Workbook, pt: &PivotTable, pivot_sheet: usize) -> Result<Out
         let name = src.headers.get(*c).cloned().unwrap_or_default();
         let shown = match &f.selected {
             None => "(All)".to_string(),
-            Some(v) if v.len() == 1 => {
-                let one = v.first().cloned().unwrap_or_default();
-                if one.eq_ignore_ascii_case(BLANK_IDENT) { wb.locale.ui.content("blank").to_string() } else { one }
-            }
+            Some(v) if v.len() == 1 => v.first().cloned().unwrap_or_default(),
             Some(_) => "(Multiple Items)".to_string(),
         };
         g.set(r, 0, Value::text(name), CellKind::Filter, 0, None);
@@ -874,7 +889,15 @@ pub fn compute(wb: &Workbook, pt: &PivotTable, pivot_sheet: usize) -> Result<Out
     if empty {
         let r = g.push_row(RowKind::Placeholder)?;
         g.set(r, 0, Value::text(format!("{} — choose fields", pt.name)), CellKind::Placeholder, 0, None);
-        return Ok(Output { width: g.width as u32, grid: g.rows, row_kinds: g.kinds, body_offset });
+        return Ok(Output {
+            width: g.width as u32,
+            grid: g.rows,
+            row_kinds: g.kinds,
+            body_offset,
+            chart_rows: vec![],
+            chart_cols: vec![],
+            label_col: None,
+        });
     }
 
     let val_name = |vi: usize| vals.get(vi).map(|(_, v)| v.name.clone()).unwrap_or_default();
@@ -884,7 +907,7 @@ pub fn compute(wb: &Workbook, pt: &PivotTable, pivot_sheet: usize) -> Result<Out
             return;
         }
         if compact {
-            g.set(r, 0, Value::text(wb.locale.ui.content("row_labels")), CellKind::Header, 0, None);
+            g.set(r, 0, Value::text("Row Labels"), CellKind::Header, 0, None);
         } else {
             for (i, f) in row_fields.iter().enumerate() {
                 g.set(r, i, Value::text(f.source_col.as_str()), CellKind::Header, 0, None);
@@ -907,11 +930,7 @@ pub fn compute(wb: &Workbook, pt: &PivotTable, pivot_sheet: usize) -> Result<Out
             g.set(cap, 0, Value::text(val_name(0)), CellKind::Header, 0, None);
         }
         if headers_on {
-            let caption = if compact {
-                wb.locale.ui.content("column_labels").to_string()
-            } else {
-                col_fields.first().map(|f| f.source_col.clone()).unwrap_or_default()
-            };
+            let caption = if compact { "Column Labels".to_string() } else { col_fields.first().map(|f| f.source_col.clone()).unwrap_or_default() };
             g.set(cap, l, Value::text(caption), CellKind::Header, 0, None);
         }
         let levels = cols.len() + usize::from(k > 1);
@@ -944,14 +963,14 @@ pub fn compute(wb: &Workbook, pt: &PivotTable, pivot_sheet: usize) -> Result<Out
                     let label = spec.path.last().and_then(|it| col_items.get(lv).map(|fi| fi.label(*it))).unwrap_or_default();
                     let text = match vi {
                         Some(vi) if k > 1 => format!("{label} {}", val_name(*vi)),
-                        _ => ctx.subtotal_label(&label),
+                        _ => format!("{label} Total"),
                     };
                     g.set(first_level + lv, c, Value::text(text), CellKind::ColLabel, 0, None);
                 }
                 ColKind::Grand => {
                     let text = match vi {
-                        Some(vi) if k > 1 => content_fmt(&wb.locale, "total_of", &[("value", &val_name(*vi))]),
-                        _ => wb.locale.ui.content("grand_total").to_string(),
+                        Some(vi) if k > 1 => format!("Total {}", val_name(*vi)),
+                        _ => "Grand Total".to_string(),
                     };
                     g.set(first_level, c, Value::text(text), CellKind::ColLabel, 0, None);
                 }
@@ -964,8 +983,21 @@ pub fn compute(wb: &Workbook, pt: &PivotTable, pivot_sheet: usize) -> Result<Out
 
     // ---- body
     let get = |rp: &[u32], cp: &[u32], vi: usize| -> Option<Value> {
-        let (_, v) = vals.get(vi)?;
-        aggs.get(&(rp.to_vec(), cp.to_vec())).and_then(|a| a.get(vi)).map(|a| a.result(v.func))
+        let (vs, v) = vals.get(vi)?;
+        let accs = aggs.get(&(rp.to_vec(), cp.to_vec()))?;
+        match vs {
+            ValSrc::Col(_) => accs.get(vi).map(|a| a.result(v.func)),
+            ValSrc::Calc(i) => {
+                let sum = |name: &str| -> Value {
+                    src.col(name)
+                        .and_then(|c| extra.iter().position(|x| *x == c))
+                        .and_then(|j| accs.get(k + j))
+                        .map(|a| a.result(PivotFunc::Sum))
+                        .unwrap_or(Value::Number(0.0))
+                };
+                Some(calc.value(wb, *i, &sum))
+            }
+        }
     };
     let num = |v: &Option<Value>| v.as_ref().and_then(Value::as_f64);
     let ratio = |a: Value, b: Option<Value>| -> Value {
@@ -984,7 +1016,7 @@ pub fn compute(wb: &Workbook, pt: &PivotTable, pivot_sheet: usize) -> Result<Out
     };
     let data_fmt: Vec<Option<String>> = vals
         .iter()
-        .map(|(c, v)| match v.show_as {
+        .map(|(vs, v)| match v.show_as {
             PivotShowAs::PercentOfGrandTotal | PivotShowAs::PercentOfColumnTotal | PivotShowAs::PercentOfRowTotal => {
                 Some(v.number_format.clone().unwrap_or_else(|| "0.00%".into()))
             }
@@ -992,12 +1024,42 @@ pub fn compute(wb: &Workbook, pt: &PivotTable, pivot_sheet: usize) -> Result<Out
             _ => v.number_format.clone().or_else(|| match v.func {
                 PivotFunc::Count | PivotFunc::CountNumbers => None,
                 _ => {
-                    let f = fmt_of(*c);
+                    let f = match vs {
+                        ValSrc::Col(c) => fmt_of(*c),
+                        ValSrc::Calc(_) => "General".to_string(),
+                    };
                     (f != "General").then_some(f)
                 }
             }),
         })
         .collect();
+    let mut chart_rows: Vec<u32> = Vec::new();
+    let chart_cols: Vec<(u32, String)> = data_cols
+        .iter()
+        .enumerate()
+        .filter_map(|(j, (si, vi))| {
+            let spec = specs.get(*si)?;
+            if spec.kind != ColKind::Leaf {
+                return None;
+            }
+            let mut parts: Vec<String> =
+                spec.path.iter().enumerate().map(|(lv, it)| col_items.get(lv).map(|fi| fi.label(*it)).unwrap_or_default()).collect();
+            if let Some(vi) = vi
+                && (k > 1 || parts.is_empty())
+            {
+                parts.push(val_name(*vi));
+            }
+            Some(((l + j) as u32, parts.join(" - ")))
+        })
+        .filter(|_| k > 0)
+        .collect();
+    let label_col = if rows.is_empty() {
+        None
+    } else if compact {
+        Some(0)
+    } else {
+        Some(rows.len().saturating_sub(1) as u32)
+    };
     for line in &lines {
         let rk = match line.kind {
             LineKind::Item(b) => RowKind::Item(b),
@@ -1010,6 +1072,9 @@ pub fn compute(wb: &Workbook, pt: &PivotTable, pivot_sheet: usize) -> Result<Out
             LineKind::Grand => (CellKind::GrandTotal, CellKind::GrandTotal),
         };
         let r = g.push_row(rk)?;
+        if line.leaf && k > 0 {
+            chart_rows.push(r as u32);
+        }
         for (c, v, indent, fmt) in &line.labels {
             g.set(r, *c, v.clone(), ck.0, *indent, fmt.clone());
         }
@@ -1064,7 +1129,7 @@ pub fn compute(wb: &Workbook, pt: &PivotTable, pivot_sheet: usize) -> Result<Out
             g.set(r, l + j, shown, ck.1, 0, data_fmt.get(*vi).cloned().flatten());
         }
     }
-    Ok(Output { width: g.width as u32, grid: g.rows, row_kinds: g.kinds, body_offset })
+    Ok(Output { width: g.width as u32, grid: g.rows, row_kinds: g.kinds, body_offset, chart_rows, chart_cols, label_col })
 }
 
 // ---------------------------------------------------------------- styling and writing
@@ -1254,7 +1319,104 @@ pub fn refresh(wb: &mut Workbook, sheet: usize, idx: usize, replace: bool) -> Re
     if let Some(p) = shm.pivots.get_mut(idx) {
         p.last_range = Some(area);
     }
+    let sheet_name = shm.name.clone();
+    rebind_charts(wb, &sheet_name, &pt.name, origin, &out);
     Ok(area)
+}
+
+// ---------------------------------------------------------------- PivotCharts
+
+/// The link a PivotChart stores to its PivotTable: `Sheet2!PivotTable1`.
+pub fn chart_link(sheet: &str, pivot: &str) -> String {
+    format!("{}!{pivot}", quote_sheet(sheet))
+}
+
+/// (sheet, PivotTable name) of a PivotChart link; a leading `[Book.xlsx]` is ignored.
+pub fn parse_chart_link(link: &str) -> Option<(String, String)> {
+    let t = link.trim();
+    let t = match t.strip_prefix('[') {
+        Some(rest) => rest.split_once(']').map(|(_, r)| r).unwrap_or(rest),
+        None => t,
+    };
+    let (sheet, name) = t.rsplit_once('!')?;
+    let sheet = sheet.trim();
+    let sheet = sheet.strip_prefix('\'').and_then(|x| x.strip_suffix('\'')).map(|x| x.replace("''", "'")).unwrap_or_else(|| sheet.to_string());
+    let name = name.trim();
+    if sheet.is_empty() || name.is_empty() {
+        return None;
+    }
+    Some((sheet, name.to_string()))
+}
+
+/// Whether a PivotChart link points at `pivot` on `sheet`.
+pub fn links_to(link: &str, sheet: &str, pivot: &str) -> bool {
+    parse_chart_link(link).is_some_and(|(s, n)| s.eq_ignore_ascii_case(sheet) && n.eq_ignore_ascii_case(pivot))
+}
+
+/// An absolute reference to `col` over grid `rows` (contiguous runs joined into a union).
+fn rows_ref(sheet: &str, origin: CellRef, col: u32, rows: &[u32]) -> Option<String> {
+    let q = quote_sheet(sheet);
+    let c = origin.col.checked_add(col)?;
+    let letters = gridcraft_core::col_to_letters(c);
+    let mut parts: Vec<String> = Vec::new();
+    let mut i = 0;
+    while let Some(&start) = rows.get(i) {
+        let mut end = start;
+        while rows.get(i + 1).is_some_and(|n| Some(*n) == end.checked_add(1)) {
+            end += 1;
+            i += 1;
+        }
+        i += 1;
+        let (a, b) = (origin.row.checked_add(start)? + 1, origin.row.checked_add(end)? + 1);
+        parts.push(if a == b { format!("{q}!${letters}${a}") } else { format!("{q}!${letters}${a}:${letters}${b}") });
+    }
+    match parts.len() {
+        0 => None,
+        1 => parts.pop(),
+        _ => Some(format!("({})", parts.join(","))),
+    }
+}
+
+/// Most category rows a PivotChart plots.
+const MAX_CHART_ROWS: usize = 10_000;
+
+/// A PivotChart's series for a report written at `origin`: categories are the innermost row
+/// items, one series per item column (column items × value fields); totals are left out.
+pub fn chart_series(sheet: &str, origin: CellRef, out: &Output) -> Vec<Series> {
+    let rows: Vec<u32> = out.chart_rows.iter().copied().take(MAX_CHART_ROWS).collect();
+    let categories = out.label_col.and_then(|c| rows_ref(sheet, origin, c, &rows));
+    out.chart_cols
+        .iter()
+        .filter_map(|(c, name)| {
+            Some(Series {
+                name: Some(format!("\"{}\"", name.replace('"', "\"\""))),
+                categories: categories.clone(),
+                values: rows_ref(sheet, origin, *c, &rows)?,
+                bubble_sizes: None,
+                color: None,
+                secondary: false,
+                kind: None,
+                smooth: false,
+                trendlines: Vec::new(),
+            })
+        })
+        .collect()
+}
+
+/// Rebuilds the series of every PivotChart of a PivotTable after its report was written.
+fn rebind_charts(wb: &mut Workbook, sheet: &str, pivot: &str, origin: CellRef, out: &Output) {
+    let linked = |ch: &Chart| ch.pivot.as_deref().is_some_and(|l| links_to(l, sheet, pivot));
+    let hits: Vec<usize> = (0..wb.sheets.len()).filter(|i| wb.sheet(*i).is_some_and(|sh| sh.charts.iter().any(linked))).collect();
+    if hits.is_empty() {
+        return;
+    }
+    let series = chart_series(sheet, origin, out);
+    for i in hits {
+        let Some(sh) = wb.sheet_mut(i) else { continue };
+        for ch in sh.charts.iter_mut().filter(|c| linked(c)) {
+            ch.series = series.clone();
+        }
+    }
 }
 
 /// Clears a pivot's last output area.
