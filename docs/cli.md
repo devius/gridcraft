@@ -3,6 +3,11 @@
 Headless GridCraft: inspect, convert, evaluate, script and serve MCP without a window. Errors go to stderr with a
 non-zero exit code.
 
+`.xls` (Excel 97-2003, BIFF8) files are imported with values, formulas, number formats, merges,
+column widths, row heights and defined names; fonts, fills, borders, charts and other objects are
+not imported yet. Import warnings go to stderr. Convert to `.xlsx` to save; `.xls` output is not
+supported.
+
 `.xlsb` files support [worksheet data import](xlsb-import.md). Formula cells use their last saved
 values; source formatting and other workbook features are omitted. Import warnings go to stderr.
 Convert to `.xlsx` to save the imported workbook; XLSB output is not supported.
@@ -19,12 +24,13 @@ cargo install --path apps/gridcraft-cli     # or: cargo run -p gridcraft-cli -- 
 |---|---|
 | `info <file> [--json]` | `gridcraft-cli info book.xlsx` — sheets, used ranges, cell counts, tables, charts, names. |
 | `convert <in> <out> [--sheet NAME]` | `gridcraft-cli convert book.xlsx data.csv --sheet Sales` — output format from the extension: `.xlsx`, `.csv`, `.tsv`, `.json`, `.html`. |
-| `eval <formula> [--in FILE] [--sheet S] [--cell A1] [--locale TAG] [--json]` | `gridcraft-cli eval '=PMT(5%/12,360,-300000)'`; `gridcraft-cli eval '=SUM(B2:B9)' --in book.xlsx`; `gridcraft-cli eval --locale pt-BR '=SOMA(1,5;2)'` prints `3,5` |
+| `eval <formula> [--in FILE] [--sheet S] [--cell A1] [--json]` | `gridcraft-cli eval '=PMT(5%/12,360,-300000)'`; `gridcraft-cli eval '=SUM(B2:B9)' --in book.xlsx` |
 | `cat <file> [--range R] [--sheet S] [--formulas] [--csv]` | `gridcraft-cli cat book.xlsx --range A1:F20` — aligned table of displayed values. |
+| `check <file-or-dir>... [--json] [--tolerance 1e-9] [--max-report N]` | `gridcraft-cli check corpus/` — calc oracle and XLSX round-trip fidelity, see below. |
 | `run …` | see below |
 | `commands [--json] [--search X]` | `gridcraft-cli commands --search border` — every command with its parameter docs. |
-| `functions [--json] [--search X] [--category C] [--locale TAG]` | `gridcraft-cli functions --search lookup`; with `--locale pt-BR` each function is listed under its Portuguese name (`PROCV(...)`). `--json` carries `name` (canonical) and `localName`. |
-| `mcp [--connect PORT] [--in FILE \| --sample NAME] [--locale TAG]` | MCP server on stdio ([mcp.md](mcp.md)). `--locale` sets the language of the headless session; it is rejected with `--connect` (change a running app with `app.setLocale`). |
+| `functions [--json] [--search X] [--category C]` | `gridcraft-cli functions --search lookup` |
+| `mcp [--connect PORT] [--in FILE \| --sample NAME]` | MCP server on stdio ([mcp.md](mcp.md)). |
 | `send <port> <method> [json]` | `gridcraft-cli send 7979 engine.execute '{"command":"home.bold","params":{"range":"A1:C1"}}'` — one control-channel request to a running app (`gridcraft --control 7979`). |
 | `version` | Prints `gridcraft-cli <version>`. |
 
@@ -33,7 +39,7 @@ cargo install --path apps/gridcraft-cli     # or: cargo run -p gridcraft-cli -- 
 ```sh
 gridcraft-cli run [--in FILE | --sample budget|sales|grades] \
     [--cmd 'id={json}']... [--script steps.jsonl] \
-    [--out FILE] [--print RANGE|used] [--sheet S] [--csv] [--formulas] [--locale TAG] [--quiet]
+    [--out FILE] [--print RANGE|used] [--sheet S] [--csv] [--formulas] [--quiet]
 ```
 
 Opens a file (or a sample, or a blank workbook), runs `--cmd` and `--script` steps in the order given, then saves
@@ -53,31 +59,76 @@ gridcraft-cli run --in book.xlsx \
 
 Command ids and parameters: `gridcraft-cli commands`.
 
-## Language and regional format (`--locale`)
-
-`--locale TAG` (`pt-BR`, `de-DE`, `ja-JP`, `pt_BR.UTF-8`, a bare `pt`, …) gives the session that interface language,
-the same formula language and the same regional format, as if the user had chosen it in Options › Language. An unknown
-tag is an error; the choices are listed by the `app.languages` command (see
-[control-protocol.md](control-protocol.md): `gridcraft-cli run --cmd app.languages` prints them as JSON).
-
-- **`eval`**: the formula is written the way a user of that language types it: local function names, local argument
-  separator, local decimal separator. The result is printed with the region's decimal separator, and booleans and
-  errors in their local spelling. `--json` stays canonical (JSON numbers, canonical error literals).
-  `gridcraft-cli eval --locale pt-BR '=SOMA(1,5;2)'` → `3,5`; `gridcraft-cli eval --locale pt-BR '=SUM(1;2)'` → `#NOME?`
-  (English names are rejected in a local session, as in Excel).
-- **`run`**: commands that take typed input accept `inputLocal` (`cell.set`, `range.fill`) and the `…Local` variants of
-  formula and number-format parameters; `input` stays canonical. Displayed values (`--print`, `sheet.read` with
-  `formatted`) follow the region; `--print --csv` separates fields with the region's list separator.
-  The locale is applied before the workbook is created or opened, so a new book gets local sheet names (`Tabelle1` in
-  de-DE) and `--in data.csv` is read in the region's format (`1,5` is 1.5 in de-DE).
-- **Files**: XLSX is always written canonically. Text files follow the region: CSV is written with the region's list
-  separator and local decimals and read the same way. Pass `delimiter` to `file.open`, `file.save`, `file.saveAs`,
-  `file.saveBytes` or `file.exportCsv` (for example `--cmd 'file.save={"path":"out.csv","delimiter":","}'`) to fix the
-  separator for automation.
+## `check`
 
 ```sh
-gridcraft-cli run --locale pt-BR \
-  --cmd 'cell.set={"cell":"A1","inputLocal":"=SOMA(1,5;2)"}' --print A1     # shows 3,5
+gridcraft-cli check <file-or-dir>... [--json] [--tolerance 1e-9] [--max-report 20]
 ```
 
-Without `--locale` the CLI works in en-US, independent of the operating system.
+Measures calculation correctness and file fidelity on any set of `.xlsx`/`.xlsm` files (directories are searched
+recursively). Nothing is written next to the inputs.
+
+**Calc oracle.** A file saved by Excel (or another calculating app) stores the app's own result beside every formula.
+`check` reads each file keeping those cached values, recalculates every formula with GridCraft and compares:
+numbers within a relative `--tolerance` (absolute when the magnitude is below 1), errors by kind, text and logicals
+exactly. Skipped, and counted separately:
+
+- *no oracle*: formulas saved without a value, and every formula of a file whose producer asked for a full
+  recalculation on load (`fullCalcOnLoad`: libraries that don't calculate, such as xlsxwriter, store 0 or nothing).
+- *volatile*: `RAND`, `RANDARRAY`, `RANDBETWEEN`, `NOW`, `TODAY`, `INFO`, `CELL("filename")`, names that use them, and
+  every formula that reads such a cell (through the dependency graph).
+
+Each mismatch lists the cell, formula, expected (cached) and actual (GridCraft) values and the functions the formula
+calls. Mismatches roll up by function: *checked* (formula cells calling it), *mismatched*, and *primary* (mismatched
+while none of the cell's precedents mismatch — the likely culprit, as opposed to a downstream effect). They also roll
+up by *signature*, `expected type → actual type` (e.g. `number → #SPILL!`), which often groups one root cause.
+
+**Round trip.** The recalculated workbook is written with GridCraft's XLSX writer, the package is validated (every
+part has a content type, every content-type override and internal relationship target exists, relationship ids are
+unique: what Excel would "repair") and read back. Categories compared: `package`, `sheets` (names and order),
+`values`, `formulas`, `numFmts` (per cell), `merges`, `names`, `tables` (name, range, columns), `condFormats` (rules
+per sheet), `validations`, `charts` (kinds and series counts), `comments`, `hyperlinks`, `pivots`. `#SPILL!`/`#CALC!`
+compare equal to `#VALUE!` and `#CIRC!` to 0, as that's what the file format stores.
+
+Files that fail to open are reported with GridCraft's error and don't stop the run. Exit code: 0 when every file
+opened with no mismatch and no round-trip difference, 1 otherwise, 2 on a usage error. `--max-report` caps the
+examples listed per file and category (counts are always complete).
+
+The human report prints each file's mismatches and differing categories, a summary table, the most mismatching
+functions, mismatch signatures and totals. `--json` prints one object (schema `gridcraft-check/1`; new fields may be
+added, a changed meaning bumps the version):
+
+```jsonc
+{
+  "schema": "gridcraft-check/1",
+  "tolerance": 1e-9,
+  "files": [{
+    "path": "book.xlsx",
+    "opened": true,
+    "error": null,                     // GridCraft's message when the file can't be opened
+    "warnings": ["..."],               // import warnings
+    "calc": {
+      "formulaCells": 3, "checked": 2, "matched": 1, "mismatched": 1, "noOracle": 1, "volatile": 0,
+      "staleCache": false,             // fullCalcOnLoad: nothing compared
+      "mismatches": [{"cell": "Sheet1!B1", "formula": "=SUM(A1:A2)", "expected": 7, "actual": 6,
+                      "kind": "numeric",  // numeric | text | bool | error | blank (GridCraft empty) | type
+                      "functions": ["SUM"], "primary": true}],
+      "functions": [{"name": "SUM", "checked": 1, "mismatched": 1, "primary": 1}],
+      "signatures": {"number → number": 1}
+    },
+    "roundTrip": {
+      "error": null,                   // write or read-back failure
+      "differing": ["values"],
+      "categories": {"values": {"equal": false, "diffs": 1, "examples": ["Sheet1!A1: 2 → 3"]}, "...": {}}
+    }
+  }],
+  "totals": {"files": 1, "opened": 1, "failedToOpen": 0, "formulaCells": 3, "checked": 2, "matched": 1,
+             "mismatched": 1, "noOracle": 1, "volatile": 0, "roundTripFailed": 0, "roundTripDiffering": 1,
+             "categoriesDiffering": {"values": 1}},
+  "functions": [{"name": "SUM", "checked": 1, "mismatched": 1, "primary": 1}],  // all files, most mismatched first
+  "signatures": {"number → number": 1}
+}
+```
+
+Values use the same JSON shapes as `eval --json`: numbers, strings, booleans, `null` (empty) and
+`{"error": "#N/A"}`. Mismatch lists are capped by `--max-report`; the counts are not.

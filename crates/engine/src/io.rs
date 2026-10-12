@@ -1,4 +1,4 @@
-//! Opening and saving files: XLSX, XLSB and ODS data import, CSV/TSV, JSON (debug), HTML export.
+//! Opening and saving files: XLSX, legacy XLS import, XLSB and ODS data import, CSV/TSV, JSON (debug), HTML export.
 
 use std::fmt::Write as _;
 
@@ -11,6 +11,8 @@ use crate::{EngineError, Result};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FileKind {
     Xlsx,
+    /// Excel 97-2003 workbook (import only).
+    Xls,
     Xlsb,
     Ods,
     Csv,
@@ -24,6 +26,7 @@ impl FileKind {
         let ext = std::path::Path::new(path).extension()?.to_str()?.to_ascii_lowercase();
         Some(match ext.as_str() {
             "xlsx" | "xlsm" | "xltx" | "xltm" => FileKind::Xlsx,
+            "xls" | "xlt" => FileKind::Xls,
             "xlsb" => FileKind::Xlsb,
             "ods" => FileKind::Ods,
             "csv" => FileKind::Csv,
@@ -35,22 +38,64 @@ impl FileKind {
     }
 }
 
+/// The error for an encrypted workbook opened without a password contains this. The interface
+/// asks for the password when it sees it; programmatic callers pass `password` instead.
+pub const PASSWORD_REQUIRED: &str = "is password-protected. Enter its password to open it.";
+/// The error for a wrong password contains this.
+pub const WRONG_PASSWORD: &str = "The password is incorrect.";
+/// The first open warning of a workbook decrypted with its password.
+pub const DECRYPTED_NOTICE: &str = "This workbook was password-protected. GridCraft saves it without the password.";
+
 /// Parses a file's bytes into a workbook. `name` picks the format by extension when the bytes
-/// don't say. Text formats read numbers, dates and booleans the way `loc` spells them.
-pub fn open_bytes(name: &str, bytes: &[u8], loc: &gridcraft_locale::Locale) -> Result<(Workbook, Vec<String>)> {
-    open_bytes_with(name, bytes, loc, None)
+/// don't say. An encrypted workbook needs [`open_bytes_with_password`].
+pub fn open_bytes(name: &str, bytes: &[u8]) -> Result<(Workbook, Vec<String>)> {
+    open_bytes_with_password(name, bytes, None)
 }
 
-/// [`open_bytes`] with an explicit CSV field `delimiter` (automation); without one the delimiter is
-/// detected, preferring the region's list separator. TSV is always tab-separated.
-pub fn open_bytes_with(name: &str, bytes: &[u8], loc: &gridcraft_locale::Locale, delimiter: Option<u8>) -> Result<(Workbook, Vec<String>)> {
+/// [`open_bytes`], first decrypting a password-protected workbook with `password`. Errors never
+/// quote the password.
+pub fn open_bytes_with_password(name: &str, bytes: &[u8], password: Option<&str>) -> Result<(Workbook, Vec<String>)> {
+    if gridcraft_xlsx::sniff(bytes) != gridcraft_xlsx::Format::Encrypted {
+        return open_plain(name, bytes);
+    }
+    // A scheme no password opens is said straight away, rather than after asking for one.
+    let decrypt_error = |e: gridcraft_xlsx::DecryptError| EngineError::Other(decrypt_message(name, e));
+    let Some(password) = password else {
+        gridcraft_xlsx::check_encryption(bytes).map_err(decrypt_error)?;
+        return Err(EngineError::Other(format!("'{name}' {PASSWORD_REQUIRED}")));
+    };
+    let plain = gridcraft_xlsx::decrypt(bytes, password).map_err(decrypt_error)?;
+    if gridcraft_xlsx::sniff(&plain) == gridcraft_xlsx::Format::Encrypted {
+        return Err(EngineError::Other(format!("We can't open '{name}': the encrypted file is damaged (it holds another encrypted file).")));
+    }
+    let (wb, mut warnings) = open_plain(name, &plain)?;
+    warnings.insert(0, DECRYPTED_NOTICE.into());
+    Ok((wb, warnings))
+}
+
+/// What to tell the user when an encrypted workbook can't be decrypted. Never quotes the password.
+fn decrypt_message(name: &str, e: gridcraft_xlsx::DecryptError) -> String {
+    match e {
+        gridcraft_xlsx::DecryptError::WrongPassword => format!("{WRONG_PASSWORD} Check that Caps Lock is off and try again."),
+        gridcraft_xlsx::DecryptError::Unsupported(scheme) => {
+            format!("'{name}' uses {scheme} encryption, which GridCraft can't open yet. Remove the password in Excel and try again.")
+        }
+        gridcraft_xlsx::DecryptError::Malformed(detail) => format!("We can't open '{name}': the encrypted file is damaged ({detail})."),
+    }
+}
+
+/// Parses bytes that aren't encrypted.
+fn open_plain(name: &str, bytes: &[u8]) -> Result<(Workbook, Vec<String>)> {
     let kind = FileKind::from_path(name);
     let sniffed = gridcraft_xlsx::sniff(bytes);
-    if sniffed == gridcraft_xlsx::Format::Encrypted {
-        return Err(EngineError::EncryptedWorkbook(name.into()));
+    if sniffed == gridcraft_xlsx::Format::Xls {
+        let (wb, report) = gridcraft_xlsx::read_xls(bytes).map_err(|e| EngineError::Other(format!("We can't open '{name}': {e}")))?;
+        return Ok((wb, report.warnings));
     }
     if sniffed == gridcraft_xlsx::Format::LegacyBinary {
-        return Err(EngineError::LegacyWorkbook(name.into()));
+        return Err(EngineError::Other(format!(
+            "'{name}' is a legacy binary file but not an Excel workbook (no workbook stream). GridCraft can't open it."
+        )));
     }
     // Content wins over the extension: an ODS or XLSB package is imported as what it is,
     // whatever it is called; the extension only decides when the bytes don't say.
@@ -61,7 +106,7 @@ pub fn open_bytes_with(name: &str, bytes: &[u8], loc: &gridcraft_locale::Locale,
     };
     if let Some(import) = import {
         let read = if import == FileKind::Ods { gridcraft_xlsx::read_ods } else { gridcraft_xlsx::read_xlsb };
-        let (wb, report) = read(bytes).map_err(|e| EngineError::ImportFailed { name: name.into(), message: e.to_string() })?;
+        let (wb, report) = read(bytes).map_err(|e| EngineError::Other(format!("We can't import '{name}': {e}")))?;
         return Ok((wb, report.warnings));
     }
     if sniffed == gridcraft_xlsx::Format::Xlsx || kind == Some(FileKind::Xlsx) {
@@ -78,13 +123,15 @@ pub fn open_bytes_with(name: &str, bytes: &[u8], loc: &gridcraft_locale::Locale,
             Ok((wb, vec![]))
         }
         Some(FileKind::Tsv) => {
-            let opts = gridcraft_xlsx::CsvOptions { delimiter: b'\t', locale: *loc, ..Default::default() };
+            let opts = gridcraft_xlsx::CsvOptions { delimiter: b'\t', ..Default::default() };
             let mut wb = gridcraft_xlsx::read_csv(bytes, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
+            // Tab is what makes it a .tsv/.txt; saved as .csv it gets the CSV default.
+            wb.csv_delimiter = None;
             rename_first_sheet(&mut wb, name);
             Ok((wb, vec![]))
         }
         _ => {
-            let opts = gridcraft_xlsx::CsvOptions { delimiter: delimiter.unwrap_or(0), locale: *loc, ..Default::default() };
+            let opts = gridcraft_xlsx::CsvOptions { delimiter: 0, ..Default::default() };
             let mut wb = gridcraft_xlsx::read_csv(bytes, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
             rename_first_sheet(&mut wb, name);
             Ok((wb, vec![]))
@@ -104,24 +151,44 @@ fn rename_first_sheet(wb: &mut Workbook, path: &str) {
     }
 }
 
-/// Encodes a workbook in the format chosen by `path`'s extension (CSV uses the workbook region's
-/// list separator).
+/// Encodes a workbook in the format chosen by `path`'s extension.
 pub fn save_bytes(wb: &Workbook, path: &str) -> Result<Vec<u8>> {
-    save_bytes_with(wb, path, None)
-}
-
-/// [`save_bytes`] with an explicit CSV field `delimiter` (automation); TSV is always tab-separated.
-pub fn save_bytes_with(wb: &Workbook, path: &str, delimiter: Option<u8>) -> Result<Vec<u8>> {
     let sheet = wb.active_sheet;
     match FileKind::from_path(path).unwrap_or(FileKind::Xlsx) {
-        FileKind::Xlsx => gridcraft_xlsx::write_xlsx(wb).map_err(|e| EngineError::Other(e.to_string())),
-        FileKind::Xlsb => Err(EngineError::ImportOnlyFormat("XLSB")),
-        FileKind::Ods => Err(EngineError::ImportOnlyFormat("ODS")),
-        FileKind::Csv => Ok(wb.sheet(sheet).map(|sh| gridcraft_xlsx::write_csv(sh, wb, delimiter.unwrap_or(0))).unwrap_or_default()),
-        FileKind::Tsv => Ok(wb.sheet(sheet).map(|sh| gridcraft_xlsx::write_csv(sh, wb, b'\t')).unwrap_or_default()),
+        // The extension picks the package kind; only the macro-enabled kinds (.xlsm, .xltm) carry
+        // the VBA project, so any other name saves without it, as Excel does.
+        FileKind::Xlsx => gridcraft_xlsx::write_xlsx_as(wb, gridcraft_xlsx::XlsxKind::from_path(path)).map_err(|e| EngineError::Other(e.to_string())),
+        FileKind::Xls => {
+            Err(EngineError::Other("Excel 97-2003 (.xls) is supported for import only. Save as .xlsx or another supported export format.".into()))
+        }
+        FileKind::Xlsb => Err(EngineError::Other("XLSB is supported for data import only. Save as .xlsx or another supported export format.".into())),
+        FileKind::Ods => Err(EngineError::Other("ODS is supported for data import only. Save as .xlsx or another supported export format.".into())),
+        // A workbook read from CSV keeps the separator it was read with (a `;` file stays `;`).
+        FileKind::Csv => Ok(wb.sheet(sheet).map(|sh| csv(wb, sh, wb.csv_delimiter.unwrap_or(b','))).unwrap_or_default()),
+        FileKind::Tsv => Ok(wb.sheet(sheet).map(|sh| csv(wb, sh, b'\t')).unwrap_or_default()),
         FileKind::Json => serde_json::to_vec_pretty(wb).map_err(|e| EngineError::Other(e.to_string())),
         FileKind::Html => Ok(to_html(wb, sheet).into_bytes()),
     }
+}
+
+/// Save As CSV/Text writes "the text and values as they are displayed in cells" with "all
+/// characters in each cell" (Microsoft Support, *Excel formatting and features that are not
+/// transferred to other file formats*): number formats applied, never column-width `#####`.
+/// Always with en-US separators and names, whatever the workbook's region: CSV is read back with
+/// en-US rules (`gridcraft_xlsx::read_csv`), so a regional `1.000` would reopen as 1.
+fn csv(wb: &Workbook, sh: &Sheet, delimiter: u8) -> Vec<u8> {
+    gridcraft_xlsx::write_csv(sh, delimiter, |c| {
+        // General's grid-width formatting rounds large identifiers to scientific notation.
+        // Delimited files have no column width, so preserve the whole numeric value instead.
+        if wb.styles.get(sh.style_id(c)).num_fmt.as_str().eq_ignore_ascii_case("General")
+            && let gridcraft_core::Value::Number(number) = sh.value(c)
+            && number.is_finite()
+        {
+            number.to_string()
+        } else {
+            crate::display::value_text_in(wb, sh, c, &gridcraft_core::region::EN_US)
+        }
+    })
 }
 
 fn esc(s: &str) -> String {
@@ -364,6 +431,22 @@ pub fn image_size(data: &[u8]) -> Option<(u32, u32)> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn macros_are_saved_only_into_xlsm() {
+        let mut wb = Workbook::new();
+        wb.vba_project = Some(b"vba".to_vec());
+        let has_macros = |path: &str| {
+            let bytes = save_bytes(&wb, path).unwrap();
+            gridcraft_xlsx::read_xlsx(&bytes).unwrap().0.vba_project.is_some()
+        };
+        assert!(has_macros("book.xlsm"));
+        assert!(has_macros("BOOK.XLSM"));
+        assert!(!has_macros("book.xlsx"), "an .xlsx never carries a VBA project");
+        assert!(has_macros("book.xltm"), "a macro-enabled template keeps the VBA project");
+        assert!(!has_macros("book.xltx"), "a macro-free template never carries a VBA project");
+        assert!(wb.vba_project.is_some(), "the open workbook keeps its macros");
+    }
+
     /// A minimal compound (CFB/OLE2) file — FAT in sector 0, directory in sector 1 — holding a
     /// root entry and the given stream names.
     fn cfb(streams: &[&str]) -> Vec<u8> {
@@ -387,19 +470,144 @@ mod tests {
         b
     }
 
+    /// Cut-list rows as a CAD/CAM program exports them: `;`-separated, CRLF, part codes in the last
+    /// two columns, a part name containing a comma.
+    const CUT_LIST: &str = "1;511;184;P3_L1_led;2162PE;16;1MM_2162PE;1MM_2162PE;;;1244121406FB;\r\n\
+                            1;562.5;510;Komoda, lijevo;2162PE;19;1MM_2162PE;;;;12441214071A;124412140710\r\n";
+
     #[test]
-    fn encrypted_workbook_is_reported_not_misread() {
-        let err = open_bytes("secret.xlsx", &cfb(&["EncryptionInfo", "EncryptedPackage"]), &gridcraft_locale::INVARIANT).unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("password-protected"), "got: {msg}");
-        assert!(!msg.contains("zip"), "must not surface the zip error: {msg}");
+    fn csv_save_keeps_the_separator_it_was_opened_with() {
+        let (wb, _) = open_bytes("cut list.csv", CUT_LIST.as_bytes()).unwrap();
+        assert_eq!(wb.csv_delimiter, Some(b';'));
+        assert_eq!(String::from_utf8(save_bytes(&wb, "cut list.csv").unwrap()).unwrap(), CUT_LIST);
+        // Save As another .csv name keeps it too; a comma file stays a comma file (quoting only
+        // fields that contain the separator in use).
+        assert_eq!(String::from_utf8(save_bytes(&wb, "copy.CSV").unwrap()).unwrap(), CUT_LIST);
+        let commas = "\"Komoda, lijevo\",b\r\n1,x;y\r\n";
+        let (wb, _) = open_bytes("plain.csv", commas.as_bytes()).unwrap();
+        assert_eq!(String::from_utf8(save_bytes(&wb, "plain.csv").unwrap()).unwrap(), commas);
+        // A tab-separated file named .csv round-trips with tabs.
+        let tabs = "a\tb\r\n1\t2\r\n";
+        let (wb, _) = open_bytes("tabs.csv", tabs.as_bytes()).unwrap();
+        assert_eq!(String::from_utf8(save_bytes(&wb, "tabs.csv").unwrap()).unwrap(), tabs);
     }
 
     #[test]
-    fn legacy_xls_is_not_called_encrypted() {
-        let err = open_bytes("old.xls", &cfb(&["Workbook", "\u{5}SummaryInformation"]), &gridcraft_locale::INVARIANT).unwrap_err();
+    fn csv_save_of_a_workbook_not_read_from_csv_uses_commas() {
+        let mut wb = Workbook::new();
+        if let Some(sh) = wb.sheet_mut(0) {
+            sh.set_value(CellRef::new(0, 0), gridcraft_core::Value::text("a"));
+            sh.set_value(CellRef::new(0, 1), gridcraft_core::Value::Number(1.0));
+        }
+        assert_eq!(save_bytes(&wb, "new.csv").unwrap(), b"a,1\r\n");
+        // Through .xlsx the CSV origin is gone, as in Excel.
+        let (from_csv, _) = open_bytes("cut list.csv", CUT_LIST.as_bytes()).unwrap();
+        let (reopened, _) = open_bytes("book.xlsx", &save_bytes(&from_csv, "book.xlsx").unwrap()).unwrap();
+        assert_eq!(reopened.csv_delimiter, None);
+        assert!(String::from_utf8(save_bytes(&reopened, "again.csv").unwrap()).unwrap().starts_with("1,511,184,"));
+        // A .tsv/.txt saved as .csv gets commas; as .tsv it keeps tabs.
+        let (tsv, _) = open_bytes("list.txt", b"a\tb\r\n").unwrap();
+        assert_eq!(save_bytes(&tsv, "list.csv").unwrap(), b"a,b\r\n");
+        assert_eq!(save_bytes(&tsv, "list.tsv").unwrap(), b"a\tb\r\n");
+    }
+
+    #[test]
+    fn encrypted_workbook_is_reported_not_misread() {
+        let file = gridcraft_xlsx::testing::encrypt_workbook(b"package", "pw");
+        let msg = open_bytes("secret.xlsx", &file).unwrap_err().to_string();
+        assert!(msg.contains(PASSWORD_REQUIRED), "got: {msg}");
+        assert!(!msg.contains("zip"), "must not surface the zip error: {msg}");
+        // A compound file naming the streams but unreadable is damage: no password is asked for,
+        // and none helps.
+        let file = cfb(&["EncryptionInfo", "EncryptedPackage"]);
+        for password in [None, Some("pw")] {
+            let msg = open_bytes_with_password("secret.xlsx", &file, password).unwrap_err().to_string();
+            assert!(msg.contains("damaged") && !msg.contains(PASSWORD_REQUIRED), "got: {msg}");
+        }
+    }
+
+    #[test]
+    fn encryption_no_password_opens_is_reported_without_asking_for_one() {
+        let info: &[u8] = &[3, 0, 2, 0, 4, 0, 0, 0]; // Standard header flags: RC4, not AES
+        let file = gridcraft_xlsx::testing::compound_file(&[("EncryptionInfo", info), ("EncryptedPackage", &[0; 8])]);
+        let msg = open_bytes("rc4.xlsx", &file).unwrap_err().to_string();
+        assert!(msg.contains("RC4") && !msg.contains(PASSWORD_REQUIRED), "got: {msg}");
+        let irm = gridcraft_xlsx::testing::compound_file(&[("EncryptedPackage", &[0; 8])]);
+        let msg = open_bytes("irm.xlsx", &irm).unwrap_err().to_string();
+        assert!(msg.contains("rights-management") && !msg.contains("damaged"), "got: {msg}");
+    }
+
+    #[test]
+    fn other_compound_files_are_not_called_encrypted() {
+        let err = open_bytes("old.doc", &cfb(&["WordDocument", "\u{5}SummaryInformation"])).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("97-2003") && msg.contains(".xlsx"), "got: {msg}");
+        assert!(msg.contains("not an Excel workbook"), "got: {msg}");
         assert!(!msg.contains("password"), "got: {msg}");
+    }
+
+    /// Save As CSV/TSV writes cells as displayed: number formats applied, formula results,
+    /// whole values in narrow columns (never `#####`), quoting unchanged.
+    #[test]
+    fn csv_writes_displayed_text() {
+        use gridcraft_core::{CellError, Value};
+        use gridcraft_model::{Cell, Formula, LineInfo, NumFmt, StyleId};
+        let mut wb = Workbook::new();
+        let mut styled = |code: &str| wb.styles.derive(StyleId::DEFAULT, |s| s.num_fmt = NumFmt::new(code));
+        let (date, money, pct, frac, text, fixed, thousands) =
+            (styled("yyyy-mm-dd"), styled("$#,##0.00"), styled("0.0%"), styled("# ?/?"), styled("@"), styled("0.00"), styled("#,##0"));
+        let sh = wb.sheet_mut(0).unwrap();
+        let cells = [
+            ("A1", Cell { value: Value::Number(46023.0), formula: None, style: date }),
+            ("B1", Cell { value: Value::Number(1234.5), formula: None, style: money }),
+            ("C1", Cell { value: Value::Number(0.125), formula: None, style: pct }),
+            ("D1", Cell { value: Value::Number(1.5), formula: None, style: frac }),
+            ("E1", Cell { value: Value::text("007"), formula: None, style: text }),
+            ("F1", Cell { value: Value::Error(CellError::NA), formula: None, style: money }),
+            ("G1", Cell { value: Value::Bool(true), formula: None, style: StyleId::DEFAULT }),
+            ("A2", Cell { value: Value::Number(46024.0), style: date, ..Cell::formula(Formula::new("A1+1")) }),
+            ("B2", Cell { value: Value::Number(12345678.9), formula: None, style: fixed }),
+            ("C2", Cell { value: Value::Number(-0.25), formula: None, style: StyleId::DEFAULT }),
+            ("D2", Cell { value: Value::Number(1234567.0), formula: None, style: thousands }),
+        ];
+        for (a, c) in cells {
+            sh.set_cell(CellRef::parse(a).unwrap(), c);
+        }
+        // Column B is far too narrow for its numbers: the grid shows #####, the file must not.
+        sh.cols.insert(1, LineInfo { size: Some(1.0), ..Default::default() });
+        sh.show_formulas = true;
+        let csv = String::from_utf8(save_bytes(&wb, "out.csv").unwrap()).unwrap();
+        assert_eq!(csv, "2026-01-01,\"$1,234.50\",12.5%,1 1/2,007,#N/A,TRUE\r\n2026-01-02,12345678.90,-0.25,\"1,234,567\",,,\r\n");
+        let tsv = String::from_utf8(save_bytes(&wb, "out.tsv").unwrap()).unwrap();
+        assert!(tsv.starts_with("2026-01-01\t$1,234.50\t12.5%\t"), "{tsv}");
+    }
+
+    #[test]
+    fn delimited_exports_preserve_general_precision_and_explicit_number_formats() {
+        use gridcraft_core::Value;
+        use gridcraft_model::{Cell, NumFmt, StyleId};
+        let mut workbook = Workbook::new();
+        let scientific = workbook.styles.derive(StyleId::DEFAULT, |style| style.num_fmt = NumFmt::new("0.00E+00"));
+        let sheet = workbook.sheet_mut(0).unwrap();
+        sheet.set_cell(CellRef::new(0, 0), Cell { value: Value::Number(124412140710.0), ..Default::default() });
+        sheet.set_cell(CellRef::new(0, 1), Cell { value: Value::Number(1.23456789012345), ..Default::default() });
+        sheet.set_cell(CellRef::new(0, 2), Cell { value: Value::Number(124412140710.0), style: scientific, ..Default::default() });
+        for (path, separator) in [("data.csv", ","), ("data.tsv", "\t")] {
+            let output = String::from_utf8(save_bytes(&workbook, path).unwrap()).unwrap();
+            assert_eq!(output, format!("124412140710{separator}1.23456789012345{separator}1.24E+11\r\n"));
+        }
+    }
+
+    #[test]
+    fn template_extension_saves_template_content_type() {
+        let bytes = save_bytes(&Workbook::new(), "Budget.xltx").unwrap();
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let mut types = String::new();
+        std::io::Read::read_to_string(&mut zip.by_name("[Content_Types].xml").unwrap(), &mut types).unwrap();
+        assert!(
+            types.contains(
+                r#"PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.template.main+xml""#
+            ),
+            "{types}"
+        );
     }
 }
