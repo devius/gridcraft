@@ -130,6 +130,10 @@ fn locale_preserves_text_cells_and_existing_entry_conveniences() {
     app.run("app.language.set", json!({"language":"es"})).unwrap();
     assert!(enter(&mut app, "=SUMA(1,5;2"));
     assert_eq!(formula(&app), "SUM(1.5,2)");
+    // The interface language no longer decides how a constant is read: the region does.
+    assert!(enter(&mut app, "-1,5"));
+    assert_eq!(app.session.active().unwrap().wb.active().unwrap().value(CellRef::new(0, 0)), Value::text("-1,5"));
+    app.run("app.region", json!({"region":"es-ES"})).unwrap();
     assert!(enter(&mut app, "-1,5"));
     assert_eq!(app.session.active().unwrap().wb.active().unwrap().value(CellRef::new(0, 0)), Value::Number(-1.5));
     app.run("home.numberFormat", json!({"format":"@"})).unwrap();
@@ -200,4 +204,22 @@ fn czech_interface_retains_its_canonical_formula_fallback() {
     assert!(!enter(&mut app, "=SUMA(1;2)"));
     let restored: UiState = serde_json::from_str(&serde_json::to_string(&app.ui).unwrap()).unwrap();
     assert_eq!(restored.language, Language::Cs);
+}
+
+#[test]
+fn a_number_the_region_reads_is_a_constant_in_the_formula_language_too() {
+    // Spanish formulas and a pt-BR region: `-R$ 5` starts like a formula (`-` and a letter) but is
+    // a currency amount the region reads, so the editor must hand it to the engine untouched.
+    let mut app = app();
+    app.run("app.language.set", json!({"language":"es"})).unwrap();
+    app.run("app.region", json!({"region":"pt-BR"})).unwrap();
+    assert!(enter(&mut app, "-R$ 5"));
+    let cell = |app: &SheetApp| app.session.active().unwrap().wb.active().unwrap().value(CellRef::new(0, 0));
+    assert_eq!(cell(&app), Value::Number(-5.0));
+    // A real formula still goes through the Spanish parser.
+    assert!(enter(&mut app, "=SUMA(1,5;2)"));
+    assert_eq!(formula(&app), "SUM(1.5,2)");
+    // The same text in en-US is not a number, so it is a (Spanish) formula and is refused.
+    app.run("app.region", json!({"region":"en-US"})).unwrap();
+    assert!(!enter(&mut app, "-R$ 5"));
 }

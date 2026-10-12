@@ -180,11 +180,15 @@ pub(crate) fn dispatch(app: &mut SheetApp, ctx: &egui::Context, key: Key, physic
         Shortcut::Dialog(name, params) => app.open_dialog(name, params),
         Shortcut::Date | Shortcut::Time => {
             let now = gridcraft_engine::calc::now_serial();
-            let (value, format) = if shortcut == Shortcut::Date { (now.floor(), "m/d/yyyy") } else { (now.fract(), "h:mm AM/PM") };
+            // The date and time are entered as the region writes them (its short date, and its short time:
+            // a 12-hour clock with AM/PM or a 24-hour one), so they read back as typed.
             let text = app
                 .session
                 .active()
-                .map(|d| gridcraft_engine::display::format(&gridcraft_engine::core::Value::Number(value), format, &d.wb).text)
+                .map(|d| {
+                    let (value, format) = if shortcut == Shortcut::Date { (now.floor(), "m/d/yyyy") } else { (now.fract(), d.wb.region.short_time) };
+                    gridcraft_engine::display::format(&gridcraft_engine::core::Value::Number(value), format, &d.wb).text
+                })
                 .unwrap_or_default();
             edit_with(app, text);
         }
