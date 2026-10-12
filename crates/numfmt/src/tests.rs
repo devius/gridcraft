@@ -122,6 +122,82 @@ fn fractions() {
     assert_eq!(f("# ???/???", 0.5), "   1/2  ");
 }
 
+/// Fraction sections with literal text, as Excel renders them (observed `TEXT()` results).
+#[test]
+fn fractions_with_literals() {
+    let cases: &[(&str, f64, &str)] = &[
+        // Literals between the parts and around the bar.
+        (r"|#\:#/#|", 23.75, "|23:3/4|"),
+        (r"|#\:#=/=#|", 23.75, "|23:3=/=4|"),
+        (r"|#\:#=/=#|", -23.75, "-|23:3=/=4|"),
+        (r"|#\:? ?=/=#|", 23.75, "|2:3 3=/=4|"),
+        (r"|#-#-#\:#/#|", 23.75, "|-2-3:3/4|"),
+        // A whole part without digits drops its separator (spaces next to a `?`).
+        (r"|#\:#/#|", 0.75, "|3/4|"),
+        (r"|#\:#/#|", -0.75, "-|3/4|"),
+        (r"|#-#-#\:#/#|", 0.75, "|--3/4|"),
+        (r"|#\:#=/=#|", 0.75, "|3=/=4|"),
+        (r"|#\:0=/=?|", 0.75, "|3=/=4|"),
+        (r"|#\:?=/=#|", 0.75, "| 3=/=4|"),
+        (r"|?\:#=/=#|", 0.75, "|  3=/=4|"),
+        (r"|?\:0=/=0|", -0.75, "-|  3=/=4|"),
+        (r"|?\:?0=/=#|", 0.75, "|   3=/=4|"),
+        (r"|0\:#=/=#|", 0.75, "|0:3=/=4|"),
+        // A zero fraction hides separator, numerator, bar and denominator (spaces if any `?`).
+        (r"|#\:#/#|", 0.0, "|0|"),
+        (r"|#\:#/#|", 1.0, "|1|"),
+        (r"|#\:#/#|", -1.0, "-|1|"),
+        (r"|#-#-#\:#/#|", 0.0, "|--0|"),
+        (r"|#-#-#\:#/#|", 1.0, "|--1|"),
+        (r"|#\:#=/=0|", 0.0, "|0|"),
+        (r"|0\:#=/=#|", 1.0, "|1|"),
+        (r"|#\:#=/=?|", 0.0, "|0      |"),
+        (r"|#\:?=/=0|", 1.0, "|1      |"),
+        (r"|?\:#=/=#|", 0.0, "|0      |"),
+        (r"|?\:#=/=#|", -1.0, "-|1      |"),
+        (r"|#\:? ?=/=#|", 0.0, "|:0      |"),
+        (r"|#\:? ?=/=?|", 1.0, "|:1      |"),
+        // ... unless the numerator has a `0` placeholder: then it shows 0/1.
+        (r"|#\:0=/=#|", 0.0, "|0=/=1|"),
+        (r"|?\:0=/=?|", 0.0, "|0:0=/=1|"),
+        (r"|0\:0=/=0|", 0.0, "|0:0=/=1|"),
+        (r"|#\:0=/=#|", 1.0, "|1:0=/=1|"),
+        (r"|?\:0=/=#|", -1.0, "-|1:0=/=1|"),
+        (r"|#\:? ?0#/000", 0.0, "|:0  00/001"),
+        (r"|#\:? ?0#/000", 1.0, "|:1  00/001"),
+        // `0` denominator placeholders zero pad on the left.
+        (r"|#\:? ?0#/000", 23.75, "|2:3  03/004"),
+        (r"|#\:? ?#/#|", 23.75, "|2:3  3/4|"),
+        // Literal text before the bar: still an improper fraction.
+        (r"|#_#/#|", 3.75, "|15 /4|"),
+        (r"|#_#/#|", -0.75, "-|3 /4|"),
+        (r"|#_#/#|", 0.0, "|0 /1|"),
+        (r"|#_#/#|", -1.0, "-|1 /1|"),
+        (r"|#_#=/=?|", 3.75, "|15 =/=4|"),
+        (r"|#_?=/=0|", 0.0, "|0 =/=1|"),
+        (r"|#_?=/=?|", 1.0, "|1 =/=1|"),
+    ];
+    for &(code, v, want) in cases {
+        assert_eq!(f(code, v), want, "{code} with {v}");
+    }
+}
+
+#[test]
+fn question_mark_pads_thousands_separator() {
+    let cases: &[(&str, f64, &str)] = &[
+        ("?,???????", 1234567.0, " 1,234,567"),
+        ("?,????????", 1234567.0, "  1,234,567"),
+        ("?,?????????", 1234567.0, "    1,234,567"),
+        ("?,?????????", -1234567.0, "-    1,234,567"),
+        ("?,??????", 1234567.0, "1,234,567"),
+        ("?,????", 12345.0, "12,345"),
+        ("0,000000000", 1234567.0, "0,001,234,567"),
+    ];
+    for &(code, v, want) in cases {
+        assert_eq!(f(code, v), want, "{code} with {v}");
+    }
+}
+
 #[test]
 fn literals_and_fill() {
     assert_eq!(f("\"$\"#,##0.00", 3.0), "$3.00");
@@ -264,6 +340,21 @@ fn text_fn() {
     assert_eq!(text_function(&Value::Number(5.0), "", S), Ok("".into()));
     assert_eq!(text_function(&Value::Number(-1.0), "m/d/yyyy", S), Err(CellError::Value));
     assert_eq!(text_function(&Value::Bool(true), "0", S), Ok("TRUE".into()));
+    // Booleans go through the text section as TRUE/FALSE (observed Excel results).
+    let cases: &[(bool, &str, &str)] = &[
+        (true, ";;;@", "TRUE"),
+        (true, ";;;\"hi\"", "hi"),
+        (true, ";;;\"h\"\"I\"", "hI"),
+        (false, ";;;\\h\\i", "hi"),
+        (true, ";;;\\@@\\@", "@TRUE@"),
+        (false, ";;;-@-", "-FALSE-"),
+        (true, ";;;@-", "TRUE-"),
+        (false, ";;;-@-@-", "-FALSE-FALSE-"),
+        (true, "0.00", "TRUE"),
+    ];
+    for &(b, code, want) in cases {
+        assert_eq!(text_function(&Value::Bool(b), code, S), Ok(want.into()), "{code} with {b}");
+    }
 }
 
 /// Deterministic xorshift for fuzzing.
@@ -419,5 +510,214 @@ fn fuzz_no_panic() {
                 assert!(s.chars().count() <= w, "{v} {w} {s}");
             }
         }
+    }
+}
+
+// ---- 15 significant digits: an exact tie at the 16th digit goes toward zero ----
+// Windows Excel 16.0.20430 TEXT() over the exact doubles below. An odd 15th digit is where
+// round-half-even and toward-zero differ; an even one is where they agree.
+
+#[test]
+fn an_exact_tie_at_the_sixteenth_digit_goes_toward_zero() {
+    for (v, whole) in [
+        (1234567890123405.0, "1234567890123400"),
+        (1234567890123415.0, "1234567890123410"),
+        (1234567890123425.0, "1234567890123420"),
+        (1234567890123435.0, "1234567890123430"),
+        (1234567890123455.0, "1234567890123450"),
+        (1234567890123475.0, "1234567890123470"),
+        (1234567890123495.0, "1234567890123490"),
+        (6631679258820775.0, "6631679258820770"),
+        (8052991635850695.0, "8052991635850690"),
+    ] {
+        assert_eq!(f("0", v), whole, "0 over {v}");
+        assert_eq!(f("0.00", v), format!("{whole}.00"), "0.00 over {v}");
+        assert_eq!(f("0", -v), format!("-{whole}"), "0 over -{v}");
+    }
+    assert_eq!(f("#,##0", 1234567890123455.0), "1,234,567,890,123,450");
+    assert_eq!(f("#,##0", -3267527853107975.0), "-3,267,527,853,107,970");
+    // A fraction is a tie as well, when it is exact in binary.
+    assert_eq!(f("0", 123456789012345.5), "123456789012345");
+    assert_eq!(f("0.00", 123456789012345.5), "123456789012345.00");
+    // Excel observed: no carry after fifteen 9s.
+    assert_eq!(f("0", 999999999999999.5), "999999999999999");
+    assert_eq!(f("0", -999999999999999.5), "-999999999999999");
+    assert_eq!(f("0", 4999999999999995.0), "4999999999999990");
+    assert_eq!(f("#,##0", -4999999999999995.0), "-4,999,999,999,999,990");
+}
+
+#[test]
+fn only_exact_ties_go_toward_zero() {
+    // Just above and just below a tie round to the nearer 15-digit value (Excel observed).
+    assert_eq!(f("0", 1234567890123455.0 + 0.25), "1234567890123460");
+    assert_eq!(f("0", 1234567890123455.5), "1234567890123460");
+    assert_eq!(f("0", 1234567890123455.0 - 0.25), "1234567890123450");
+    // 16 digits that are not a tie, and the ordinary decimal cases, are untouched.
+    assert_eq!(f("0", 1234567890123456.0), "1234567890123460");
+    assert_eq!(f("0", 1234567890123454.0), "1234567890123450");
+    assert_eq!(f("0.00", 2.675), "2.68");
+    assert_eq!(f("0.00", 1.005), "1.01");
+    assert_eq!(f("0.0", 0.285), "0.3");
+    assert_eq!(f("0.0", 99999999999999.95), "100000000000000.0");
+    // Ten digits and a half are not a 16th-digit tie.
+    assert_eq!(f("0", 0.5), "1");
+    assert_eq!(f("0", 2.5), "3");
+}
+
+#[test]
+fn decimal_digits_keeps_fifteen_digits_and_truncates_a_tie() {
+    use crate::decimal::decimal_digits;
+    let (d, e) = decimal_digits(1234567890123455.0);
+    assert_eq!((d, e), ([1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5], 15));
+    let (d, e) = decimal_digits(1234567890123456.0);
+    assert_eq!((d, e), ([1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 6], 15));
+    let (d, e) = decimal_digits(123456789012345.5);
+    assert_eq!((d, e), ([1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5], 14));
+    // Excel observed: a tie after fifteen 9s does not carry (999999999999999.5 shows 999999999999999).
+    let (d, e) = decimal_digits(999999999999999.5);
+    assert_eq!((d, e), ([9; 15], 14));
+    let (d, e) = decimal_digits(4999999999999995.0);
+    assert_eq!((d, e), ([4, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9], 15));
+    // A 16th digit above 5 carries as usual.
+    let (d, e) = decimal_digits(999999999999999.6);
+    assert_eq!((d, e), ([1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 15));
+}
+
+fn fin(region: &str, code: &str, n: f64) -> String {
+    format_value_in(&Value::Number(n), &NumberFormat::parse(code), S, gridcraft_core::region::find(region).unwrap()).text
+}
+
+#[test]
+fn regional_separators() {
+    assert_eq!(fin("en-US", "#,##0.00", 1234567.891), "1,234,567.89");
+    assert_eq!(fin("pt-BR", "#,##0.00", 1234567.891), "1.234.567,89");
+    assert_eq!(fin("de-DE", "#,##0.00", -1234.5), "-1.234,50");
+    assert_eq!(fin("fr-FR", "#,##0.00", 1234567.891), "1\u{a0}234\u{a0}567,89");
+    assert_eq!(fin("ru-RU", "#,##0", 1234567.0), "1\u{a0}234\u{a0}567");
+    assert_eq!(fin("de-DE", "0.00", 3.14259), "3,14");
+    assert_eq!(fin("de-DE", "0.0E+00", 12345.0), "1,2E+04");
+    assert_eq!(fin("de-DE", "#,##0.00\\ \"€\"", 1234.5), "1.234,50 €");
+    assert_eq!(fin("de-DE", "0.00%", 0.1234), "12,34%");
+    assert_eq!(fin("de-DE", "#,##0,", 1234567.0), "1.235");
+    assert_eq!(fin("de-DE", "0.0,\"x\"", 5000.0), "5,0x");
+}
+
+#[test]
+fn indian_grouping_displays_three_then_two() {
+    assert_eq!(fin("en-IN", "#,##0.00", 1234567.89), "12,34,567.89");
+    assert_eq!(fin("en-IN", "#,##0", 123456789.0), "12,34,56,789");
+    assert_eq!(fin("en-IN", "#,##0", 999.0), "999");
+    assert_eq!(fin("en-IN", "#,##0", 1000.0), "1,000");
+    assert_eq!(fin("en-IN", "#,##0", 100000.0), "1,00,000");
+    assert_eq!(fin("en-IN", "#,##0", -12345678.0), "-1,23,45,678");
+    assert_eq!(fin("en-IN", "#,###", 1234567.0), "12,34,567");
+    assert_eq!(fin("en-GB", "#,##0", 1234567.0), "1,234,567");
+}
+
+#[test]
+fn general_uses_the_regional_decimal() {
+    assert_eq!(fin("de-DE", "General", 1.5), "1,5");
+    assert_eq!(fin("pt-BR", "General", -0.25), "-0,25");
+    assert_eq!(fin("en-GB", "General", 1.5), "1.5");
+    assert_eq!(fin("de-DE", "General", 1234567.0), "1234567");
+    assert_eq!(fin("de-DE", "\"x\"General", 2.5), "x2,5");
+    assert_eq!(format_general_fit_in(1.25, 11, gridcraft_core::region::find("fr-FR").unwrap()).as_deref(), Some("1,25"));
+    assert_eq!(fin("de-DE", "@", 2.5), "2,5");
+}
+
+#[test]
+fn month_and_day_names_and_am_pm_in_the_region() {
+    // 25 September 2026 is a Friday.
+    assert_eq!(fin("en-US", "dddd mmmm", 46290.0), "Friday September");
+    assert_eq!(fin("de-DE", "dddd, mmmm yyyy", 46290.0), "Freitag, September 2026");
+    assert_eq!(fin("de-DE", "ddd mmm", 46290.0), "Fr Sep");
+    assert_eq!(fin("fr-FR", "dddd d mmmm yyyy", 46290.0), "vendredi 25 septembre 2026");
+    assert_eq!(fin("fr-FR", "mmm", 46290.0), "sept.");
+    assert_eq!(fin("es-ES", "dddd", 46290.0), "viernes");
+    assert_eq!(fin("pt-BR", "mmmm", 46250.0), "agosto");
+    assert_eq!(fin("ja-JP", "mmmm dddd", 46290.0), "9月 金曜日");
+    assert_eq!(fin("zh-CN", "mmmm", 46290.0), "九月");
+    assert_eq!(fin("zh-CN", "mmmmm", 46290.0), "九");
+    assert_eq!(fin("en-GB", "mmm", 46290.0), "Sept");
+    // The month with a day is the genitive form where there is one.
+    assert_eq!(fin("ru-RU", "mmmm", 46290.0), "сентябрь");
+    assert_eq!(fin("ru-RU", "d mmmm yyyy", 46290.0), "25 сентября 2026");
+    assert_eq!(fin("cs-CZ", "d. mmmm yyyy", 46290.0), "25. září 2026");
+    assert_eq!(fin("cs-CZ", "mmmm", 46250.0), "srpen");
+    assert_eq!(fin("ka-GE", "d mmmm yyyy", 46290.0), "25 სექტემბერი 2026");
+    assert_eq!(fin("ka-GE", "m/d/yyyy", 46290.0), "25.09.2026");
+    assert_eq!(fin("en-US", "h:mm AM/PM", 46290.75), "6:00 PM");
+    assert_eq!(fin("ja-JP", "h:mm AM/PM", 46290.75), "6:00 午後");
+    assert_eq!(fin("ko-KR", "h:mm AM/PM", 46290.25), "6:00 오전");
+    assert_eq!(fin("es-ES", "h:mm AM/PM", 46290.75), "6:00 p. m.");
+    // A/P keeps the letters of the code.
+    assert_eq!(fin("ja-JP", "h:mm A/P", 46290.75), "6:00 P");
+}
+
+#[test]
+fn built_in_formats_14_and_22_show_the_regions_short_date() {
+    // 25 September 2026 18:00.
+    let v = 46290.75;
+    assert_eq!(fin("en-US", "m/d/yyyy", v), "9/25/2026");
+    assert_eq!(fin("en-US", "m/d/yyyy h:mm", v), "9/25/2026 18:00");
+    assert_eq!(fin("en-GB", "m/d/yyyy", v), "25/09/2026");
+    assert_eq!(fin("en-GB", "m/d/yyyy h:mm", v), "25/09/2026 18:00");
+    assert_eq!(fin("en-IN", "m/d/yyyy", v), "25/09/2026");
+    assert_eq!(fin("de-DE", "m/d/yyyy", v), "25.09.2026");
+    assert_eq!(fin("de-DE", "m/d/yyyy h:mm", v), "25.09.2026 18:00");
+    assert_eq!(fin("pt-BR", "m/d/yyyy", v), "25/09/2026");
+    assert_eq!(fin("ru-RU", "m/d/yyyy", v), "25.09.2026");
+    assert_eq!(fin("cs-CZ", "m/d/yyyy", v), "25.09.2026");
+    assert_eq!(fin("ja-JP", "m/d/yyyy", v), "2026/9/25");
+    assert_eq!(fin("ko-KR", "m/d/yyyy", v), "2026-09-25");
+    assert_eq!(fin("zh-TW", "m/d/yyyy h:mm", v), "2026/9/25 18:00");
+    // Other date codes are written out as they are.
+    assert_eq!(fin("de-DE", "d-mmm-yy", v), "25-Sep-26");
+    assert_eq!(fin("en-GB", "yyyy-mm-dd", v), "2026-09-25");
+    assert_eq!(fin("de-DE", "[$-409]m/d/yyyy", v), "9/25/2026");
+    assert_eq!(fin("de-DE", "m/d/yyyy", 0.5), "00.01.1900");
+    assert_eq!(fin("de-DE", "m/d/yyyy", -1.0), "########");
+}
+
+#[test]
+fn system_long_date_and_time_follow_the_region() {
+    let v = 46290.75;
+    // The code ribbon's Long Date and Time write.
+    let long = "[$-F800]dddd, mmmm dd, yyyy";
+    let time = "[$-F400]h:mm:ss AM/PM";
+    assert_eq!(fin("en-US", long, v), "Friday, September 25, 2026");
+    assert_eq!(fin("en-US", time, v), "6:00:00 PM");
+    assert_eq!(fin("en-GB", long, v), "Friday, 25 September 2026");
+    assert_eq!(fin("en-GB", time, v), "18:00:00");
+    assert_eq!(fin("de-DE", long, v), "Freitag, 25. September 2026");
+    assert_eq!(fin("de-DE", time, v), "18:00:00");
+    assert_eq!(fin("pt-BR", long, v), "sexta-feira, 25 de setembro de 2026");
+    assert_eq!(fin("es-ES", long, v), "viernes, 25 de septiembre de 2026");
+    assert_eq!(fin("fr-FR", long, v), "vendredi 25 septembre 2026");
+    assert_eq!(fin("ru-RU", long, v), "25 сентября 2026 г.");
+    assert_eq!(fin("ja-JP", long, v), "2026年9月25日");
+    assert_eq!(fin("ko-KR", long, v), "2026년 9월 25일 금요일");
+    assert_eq!(fin("ko-KR", time, v), "오후 6:00:00");
+    // As Excel writes it into files, and the newer tags.
+    assert_eq!(fin("de-DE", "[$-F800]dddd\\,\\ mmmm\\ dd\\,\\ yyyy", v), "Freitag, 25. September 2026");
+    assert_eq!(fin("de-DE", "[$-x-sysdate]dddd, mmmm dd, yyyy", v), "Freitag, 25. September 2026");
+    assert_eq!(fin("de-DE", "[$-x-systime]h:mm:ss AM/PM", v), "18:00:00");
+    assert!(NumberFormat::parse(long).is_date());
+    assert_eq!(NumberFormat::parse(long).kind(), FormatKind::Date);
+    // Without a region the tag shows what the code says.
+    assert_eq!(f(long, v), "Friday, September 25, 2026");
+}
+
+#[test]
+fn en_us_region_matches_the_unqualified_functions() {
+    for (code, n) in [
+        ("#,##0.00", 1234.5),
+        ("General", 0.1),
+        ("m/d/yyyy h:mm", 46290.75),
+        ("mmm d", 46290.0),
+        ("[$-F800]dddd, mmmm dd, yyyy", 46290.0),
+        ("h:mm AM/PM", 0.75),
+    ] {
+        assert_eq!(fin("en-US", code, n), f(code, n), "{code}");
     }
 }

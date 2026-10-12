@@ -1,6 +1,6 @@
 # Roadmap detail
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** minor (M12 languages, #191: M12 and M15 status, post-beta localization row, `cargo xtask locales`) · **Target:** Microsoft Excel (Microsoft 365)
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-11 · **Change:** minor (PivotTable calculated fields) · **Target:** Microsoft Excel (Microsoft 365)
 
 Forward-looking plan. The one-page summary is [`ROADMAP.md`](../ROADMAP.md); the ranked work
 list is [`gaps.md`](gaps.md); numbers and method are in
@@ -11,8 +11,8 @@ list is [`gaps.md`](gaps.md); numbers and method are in
 1. **Review and land the open PR queue** (50 PRs on 2026-10-10): recalc and spill fixes (#148,
    #155, #156, #157), whole-sheet and large-range fixes (#151, #152, #153, #154), chart kinds
    (#158, #161), macOS document open (#164, #167), German UI, numbers and formulas (#163),
-   15-digit comparison (#187). 8–15 h. Language work goes into the Fluent catalog (`locales/`) and
-   the locale data (`crates/locale/data/`), checked by `cargo xtask locales`, never scattered literals.
+   15-digit comparison (#187). 8–15 h. Language work should extend the new `i18n` catalog past the
+   ribbon rather than add scattered literals.
 2. **XLSX on real files** (gaps #1, #3): corpus run plus Excel opening our output.
 3. **Large workbooks and multi-threaded recalc** (gap #2).
 
@@ -27,7 +27,7 @@ workflow, would make GridCraft pre-alpha.
 | Build a model: enter data and formulas, recalc, save XLSX, reopen | yes | 492 working functions, dynamic arrays, LET/LAMBDA, names, tables; XLSX round-trip tests (`crates/xlsx/src/tests/roundtrip.rs`). Edge-case bugs (#57 15-digit equality, stale spills #133/#139) give wrong results in specific cases, not in the workflow | 0 (fixes are beta work, gap #6) |
 | Open a colleague's XLSX, edit, save, hand it back | partial, not blocking | Typical workbooks open and save with cells, styles, CF, validation, tables, names and pivots; unmodelled parts are dropped with a warning (gap #3); Excel-side repair prompts unverified (gap #1); ~100 MB files fail (#175) | 0 for alpha (gaps #1–#3 are beta gates) |
 | Format and present: number formats, styles, conditional formatting, print or PDF | yes | Full number-format language, 47 cell styles, all CF kinds, Page Break Preview, PDF export and printing. PDF can't carry non-Latin text (gap #5) | 0 |
-| Analyze: sort, filter, tables, PivotTable | yes | Multi-level sort, AutoFilter, tables with totals, PivotTables with field list, layouts, grouping, refresh and XLSX round-trip. Slicers and calculated fields missing (gap #8) | 0 |
+| Analyze: sort, filter, tables, PivotTable | yes | Multi-level sort, AutoFilter, tables with totals, PivotTables with field list, layouts, grouping, refresh and XLSX round-trip. Calculated fields done; slicers missing (gap #8) | 0 |
 | Chart the data | partial, not blocking | Column, bar, line, pie, area, scatter and combo charts are created, edited and survive save and reopen; histogram, box, waterfall, funnel, treemap, sunburst and stock lose their kind in XLSX (fix in PRs #158, #161); no axis options or trendlines (gap #4) | 0 for alpha (2–4 h to merge the kind fixes) |
 | Import and export CSV | yes | Encoding and delimiter detection on read, CSV/TSV write; exports raw rather than displayed values (gap #19) | 0 |
 
@@ -74,17 +74,17 @@ to check our files, and Windows machines with the reported GPU drivers.
 | M9 | Page layout & print | most; Page Layout view remains |
 | M10 | PivotTables, Solver, Analysis ToolPak | PivotTables in; slicers, Solver, ToolPak remain |
 | M11 | Automation (record actions, scripts) | done |
-| M12 | Performance, accessibility, i18n | partial; i18n in (12 languages, #191); performance and accessibility remain |
+| M12 | Performance, accessibility, i18n | partial; i18n not started |
 | M13 | Release & polish | releases shipping (v0.2.0–v0.4.0, signed) |
 | M14 | **Beta gates** (table above) | not started as a milestone; parts in open PRs |
-| M15 | Localization infrastructure and the twelve languages | infrastructure done (M12, #191): 8 of the 12 target languages, plus zh-TW, pt-PT, it and ru; Hindi, Arabic, Indonesian, Vietnamese, shaping and right-to-left remain |
+| M15 | Localization infrastructure and the twelve languages | started: ribbon catalog in ja, zh, ko, pt-BR, ru (#31, #104, #82); German in PR #163 |
 | M16 | Get & Transform, data model | not started |
 
 ## After beta (ranked)
 
 | Work | Gap | Hours |
 |---|---|---|
-| Localization: Hindi, Arabic, Indonesian, Vietnamese; shaping, right-to-left; native review | #11 | 45–65 |
+| Localization: catalog past the ribbon, then twelve languages | #11 | 100–165 |
 | Get & Transform and the data model | #12 | 60–100 |
 | Solver, Analysis ToolPak, Forecast Sheet | #13 | 22–35 |
 | Remaining functions, oracle suite | #15 | 18–30 |
@@ -100,8 +100,6 @@ to check our files, and Windows machines with the reported GPU drivers.
 
 - `cargo xtask parity` regenerates [`parity-checklist.md`](parity-checklist.md) (ribbon
   catalog vs registered commands); `cargo xtask ci` checks it is current.
-- `cargo xtask locales` reports per-language coverage (messages, function names, shortcuts) and
-  fails on missing or extra message keys; `cargo xtask ci` runs it.
 - `cargo test --workspace`: engine, formula, function, XLSX and UI behaviour.
 - `cargo run --release -p gridcraft-ui-egui --example snapshot -- --sample sales out.png`: look at
   the UI offscreen.
@@ -114,7 +112,7 @@ to check our files, and Windows machines with the reported GPU drivers.
 
 | Date | Change | Summary |
 |---|---|---|
-| 2026-10-10 | minor | M12 languages (#191): M12 and M15 status, localization post-beta row 100–165 h → 45–65 h, language-work rule and `cargo xtask locales` |
+| 2026-10-11 | minor | PivotTable calculated fields landed |
 | 2026-10-10 | minor | Current focus and M15 updated for the 10-10 merges |
 | 2026-10-10 | minor | Added the alpha gate table (six core workflows; passes, stays alpha) |
 | 2026-10-10 | major | Created: current focus, beta gates (~160–240 h), milestones moved from ROADMAP.md, post-beta ranking |

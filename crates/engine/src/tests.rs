@@ -53,6 +53,110 @@ fn entering_empty_cells_preserves_whole_sheet_formatting() {
 }
 
 #[test]
+fn pasted_currency_text_keeps_the_number_from_the_clipboard_html() {
+    // #257: "Rp10,000.00" copied from Excel for the web / LibreOffice Calc pasted as text. Their
+    // clipboard HTML records the number (x:num, sdval); paste keeps it and shows the same text.
+    let mut s = s();
+    let text = "Rp10,000.00\tRp2,500.50\tLabel\n";
+    let html =
+        r#"<table><tr><td x:num="10000">Rp10,000.00</td><td sdval="2500.5" sdnum="1033;0;x"><font>Rp2,500.50</font></td><td>Label</td></tr></table>"#;
+    s.execute("edit.paste", json!({"at": "A1", "text": text, "html": html})).unwrap();
+    assert_eq!(v(&s, "A1"), Value::number(10000.0));
+    assert_eq!(v(&s, "B1"), Value::number(2500.5));
+    assert_eq!(v(&s, "C1"), Value::text("Label"));
+    let d = s.doc().unwrap();
+    let sh = d.wb.active().unwrap();
+    assert_eq!(crate::display::cell_text(&d.wb, sh, CellRef::parse("A1").unwrap()), "Rp10,000.00");
+    assert_eq!(crate::display::cell_text(&d.wb, sh, CellRef::parse("B1").unwrap()), "Rp2,500.50");
+
+    // HTML that doesn't show the same text (left over from another copy) changes nothing; without
+    // HTML the text stays text, as typing it would in an en-US locale.
+    let stale = r#"<table><tr><td x:num="7">Rp7.00</td></tr></table>"#;
+    s.execute("edit.paste", json!({"at": "A3", "text": "Rp10,000.00", "html": stale})).unwrap();
+    s.execute("edit.paste", json!({"at": "A4", "text": "Rp10,000.00"})).unwrap();
+    assert_eq!(v(&s, "A3"), Value::text("Rp10,000.00"));
+    assert_eq!(v(&s, "A4"), Value::text("Rp10,000.00"));
+}
+
+#[test]
+fn editing_a_name_renames_it_in_formulas() {
+    // Name Manager › Edit…: `oldName` edits the name in place; formulas that use it follow.
+    let mut s = s();
+    s.execute("cell.set", json!({"cell": "A1", "input": "21"})).unwrap();
+    s.execute("formulas.defineName", json!({"name": "Price", "refersTo": "=Sheet1!$A$1"})).unwrap();
+    s.execute("formulas.defineName", json!({"name": "Other", "refersTo": "=1"})).unwrap();
+    s.execute("cell.set", json!({"cell": "B1", "input": "=Price*2"})).unwrap();
+    let err = s.execute("formulas.defineName", json!({"name": "Other", "refersTo": "=Sheet1!$A$1", "oldName": "Price"}));
+    assert!(err.is_err(), "renaming onto another existing name is refused");
+    s.execute("formulas.defineName", json!({"name": "Cost", "refersTo": "=Sheet1!$A$1", "comment": "unit", "oldName": "Price"})).unwrap();
+    let d = s.doc().unwrap();
+    let names: Vec<&str> = d.wb.names.iter().map(|n| n.name.as_str()).collect();
+    assert_eq!(names, ["Other", "Cost"]);
+    let b1 = d.wb.active().unwrap().cell(CellRef::parse("B1").unwrap()).and_then(|c| c.formula.clone()).unwrap();
+    assert_eq!(b1.text, "Cost*2");
+    assert_eq!(v(&s, "B1"), Value::number(42.0));
+    assert!(s.execute("formulas.defineName", json!({"name": "X", "oldName": "Missing"})).is_err());
+}
+
+#[test]
+fn chart_recommendations_follow_the_data_shape() {
+    // #215: Recommended Charts lists chart types for the data; programmatic insert stays dialog-free.
+    let mut s = s();
+    let kinds = |s: &mut Session, range: &str| -> Vec<String> {
+        let r = s.execute("insert.chartRecommendations", json!({"range": range})).unwrap();
+        r.as_array().unwrap().iter().map(|x| format!("{}{}", x["type"].as_str().unwrap(), x["subtype"].as_str().unwrap())).collect()
+    };
+    s.execute("range.setValues", json!({"range": "A1", "values": [["Fruit", "Sales"], ["Apples", 5], ["Pears", 3], ["Plums", 2]]})).unwrap();
+    assert_eq!(kinds(&mut s, "A1:B4"), ["column", "bar", "pie", "doughnut", "linemarkers"]);
+    s.execute("range.setValues", json!({"range": "D1", "values": [[1, 2], [2, 4.5], [3, 5.5], [4, 9]]})).unwrap();
+    assert_eq!(kinds(&mut s, "D1:E4").first().map(String::as_str), Some("scatter"), "two numeric columns: scatter first");
+    s.execute("range.setValues", json!({"range": "G1", "values": [["Q", "North", "South"], ["Q1", 1, -2], ["Q2", 3, 4]]})).unwrap();
+    let multi = kinds(&mut s, "G1:I3");
+    assert_eq!(multi.first().map(String::as_str), Some("column"));
+    assert!(!multi.iter().any(|k| k == "pie"), "several series: no pie");
+    assert!(s.execute("insert.chartRecommendations", json!({"range": "K1:K3"})).is_err(), "no numbers, no chart");
+
+    // Without a type the command inserts the first recommendation; with one, that type.
+    s.execute("insert.recommendedCharts", json!({"range": "D1:E4"})).unwrap();
+    s.execute("insert.recommendedCharts", json!({"range": "A1:B4", "type": "pie"})).unwrap();
+    let d = s.doc().unwrap();
+    let kinds: Vec<_> = d.wb.active().unwrap().charts.iter().map(|c| c.kind).collect();
+    assert_eq!(kinds, [gridcraft_model::ChartKind::Scatter, gridcraft_model::ChartKind::Pie]);
+    assert!(s.ui_requests.is_empty(), "programmatic calls never open the dialog");
+}
+
+#[test]
+fn chart_category_axis_from_blank_corner_and_select_data() {
+    // #287: numeric X values must be the category axis, not a series of their own.
+    let mut s = s();
+    let series = |s: &Session| -> Vec<(Option<String>, String)> {
+        let d = s.doc().unwrap();
+        d.wb.active().unwrap().charts.last().unwrap().series.iter().map(|x| (x.categories.clone(), x.values.clone())).collect()
+    };
+    // A blank top-left cell marks the first column as category labels, numbers or not.
+    s.execute("range.setValues", json!({"range": "A1", "values": [[null, "Sales"], [2020, 5], [2021, 7], [2022, 9]]})).unwrap();
+    s.execute("insert.chart", json!({"range": "A1:B4", "type": "line"})).unwrap();
+    assert_eq!(series(&s), [(Some("Sheet1!$A$2:$A$4".to_string()), "Sheet1!$B$2:$B$4".to_string())]);
+
+    // With a "Year" header the year column is a series, as before; Select Data fixes it:
+    // Horizontal (Category) Axis Labels and Remove on the year series.
+    s.execute("range.setValues", json!({"range": "D1", "values": [["Year", "Sales"], [2020, 5], [2021, 7], [2022, 9]]})).unwrap();
+    s.execute("insert.chart", json!({"range": "D1:E4", "type": "line"})).unwrap();
+    assert_eq!(series(&s).len(), 2);
+    assert!(s.execute("chart.selectData", json!({})).is_err(), "nothing to change");
+    assert!(s.execute("chart.selectData", json!({"categories": "not a range"})).is_err());
+    s.execute("chart.selectData", json!({"categories": "=D2:D4", "removeSeries": [0, 7]})).unwrap();
+    assert_eq!(series(&s), [(Some("Sheet1!$D$2:$D$4".to_string()), "Sheet1!$E$2:$E$4".to_string())]);
+    let d = s.doc().unwrap();
+    let sh = d.wb.active().unwrap();
+    let data = gridcraft_chart::resolve(&d.wb, d.wb.active_sheet, sh.charts.last().unwrap());
+    assert_eq!(data.categories, ["2020", "2021", "2022"]);
+    // The last series can't be removed; "" clears the labels.
+    s.execute("chart.selectData", json!({"categories": "", "removeSeries": [0]})).unwrap();
+    assert_eq!(series(&s), [(None, "Sheet1!$E$2:$E$4".to_string())]);
+}
+
+#[test]
 fn entry_and_text_paste_use_inherited_formats_and_cell_overrides() {
     let mut s = s();
     s.execute("home.bold", json!({"range": "B:B", "on": true})).unwrap();
@@ -96,6 +200,45 @@ fn enter_values_and_formulas() {
     let d = s.doc().unwrap();
     let sh = d.wb.active().unwrap();
     assert_eq!(crate::display::cell_text(&d.wb, sh, CellRef::parse("B1").unwrap()), "12%");
+}
+
+#[test]
+fn formulas_with_the_wrong_argument_count_are_refused_on_entry() {
+    // #363: =DATEDIF(start, end) was stored and showed #VALUE!. Like Excel, entry refuses it and
+    // the message gives the signature, so the missing unit argument is visible.
+    let mut s = s();
+    s.execute("cell.set", json!({"cell": "A1", "input": "kept"})).unwrap();
+    for (input, word) in [
+        ("=DATEDIF(DATE(2024,1,1),DATE(2024,3,15))", "few"),
+        ("=1+DATE(2024,1)", "few"),
+        ("=SUM()", "few"),
+        ("=IFERROR(1,LEFT(\"a\",1,2,3))", "many"),
+        ("=datedif(1,2,\"D\",4)", "many"),
+    ] {
+        let e = s.execute("cell.set", json!({"cell": "A1", "input": input})).unwrap_err().to_string();
+        assert!(e.contains(&format!("too {word} arguments")), "{input}: {e}");
+        assert_eq!(v(&s, "A1"), Value::text("kept"), "{input} must not replace the cell");
+    }
+    let e = s.execute("cell.set", json!({"cell": "A1", "input": "=DATEDIF(1,2)"})).unwrap_err().to_string();
+    assert!(e.contains("DATEDIF(start_date, end_date, unit)"), "{e}");
+    // Correct counts, optional arguments left empty, special forms, LAMBDA names and unknown
+    // functions (#NAME?) still enter.
+    s.execute("formulas.defineName", json!({"name": "TWICE", "refersTo": "=LAMBDA(x,x*2)"})).unwrap();
+    for (cell, input) in [
+        ("B1", "=DATEDIF(DATE(2024,1,1),DATE(2024,3,15),\"D\")"),
+        ("B2", "=IF(TRUE,1)"),
+        ("B3", "=LET(a,1,b,2,a+b)"),
+        ("B4", "=TWICE(4)"),
+        ("B5", "=NOSUCHFUNCTION(1,2,3)"),
+        ("B6", "=ROUND(2.5,)"),
+    ] {
+        s.execute("cell.set", json!({"cell": cell, "input": input})).unwrap_or_else(|e| panic!("{input}: {e}"));
+    }
+    assert_eq!(v(&s, "B1"), Value::Number(74.0));
+    assert_eq!(v(&s, "B4"), Value::Number(8.0));
+    // Pasted text that isn't a valid formula stays text, as it does for a parse error.
+    s.execute("edit.paste", json!({"at": "C1", "text": "=DATEDIF(1,2)\n"})).unwrap();
+    assert_eq!(v(&s, "C1"), Value::text("=DATEDIF(1,2)"));
 }
 
 #[test]
@@ -193,7 +336,7 @@ fn shape_text_is_capped_like_a_cell() {
     assert_eq!(s.doc().unwrap().wb.active().unwrap().shapes[0].text.chars().count(), 32_767);
     let undo_len = s.doc().unwrap().undo.len();
     let too_long = "x".repeat(32_768);
-    assert!(matches!(s.execute("shape.setText", json!({"id": id, "text": too_long})), Err(crate::EngineError::TextBoxTooLong(32_767))));
+    assert!(matches!(s.execute("shape.setText", json!({"id": id, "text": too_long})), Err(crate::EngineError::BadParams { .. })));
     assert_eq!(s.doc().unwrap().wb.active().unwrap().shapes[0].text.chars().count(), 32_767);
     assert_eq!(s.doc().unwrap().undo.len(), undo_len);
 }
@@ -418,6 +561,123 @@ fn insert_delete_rows_adjust() {
 }
 
 #[test]
+fn move_columns_reorders_without_overwriting_and_undoes_once() {
+    let mut s = s();
+    s.execute("range.setValues", json!({"range": "A1", "values": [[1, 2, 3, 4, 5, 6, 7, 8]]})).unwrap();
+    s.execute("cell.set", json!({"cell": "H2", "input": "=B1+D1"})).unwrap();
+    s.execute("cell.set", json!({"cell": "H3", "input": "=SUM(B:B)"})).unwrap();
+    s.execute("home.columnWidth", json!({"cols": "B:B", "width": 101})).unwrap();
+    s.execute("home.columnWidth", json!({"cols": "C:C", "width": 102})).unwrap();
+    let before = s.doc().unwrap().wb.clone();
+    s.doc_mut().unwrap().undo.clear();
+
+    let result = s.execute("sheet.moveColumns", json!({"cols": "B:C", "before": 4})).unwrap();
+    assert_eq!(result["cols"], "C:D");
+    assert_eq!(
+        (0..8).map(|col| v(&s, &CellRef::new(0, col).a1())).collect::<Vec<_>>(),
+        vec![
+            Value::Number(1.0),
+            Value::Number(4.0),
+            Value::Number(2.0),
+            Value::Number(3.0),
+            Value::Number(5.0),
+            Value::Number(6.0),
+            Value::Number(7.0),
+            Value::Number(8.0),
+        ]
+    );
+    assert_eq!(s.execute("cell.get", json!({"cell": "H2"})).unwrap()["formula"], "=C1+B1");
+    assert_eq!(s.execute("cell.get", json!({"cell": "H3"})).unwrap()["formula"], "=SUM(C:C)");
+    let sh = s.doc().unwrap().wb.active().unwrap();
+    assert_eq!(sh.col_width(2), 101.0);
+    assert_eq!(sh.col_width(3), 102.0);
+    assert_eq!(s.doc().unwrap().selection.current().a1(), "C:D");
+    assert_eq!(s.doc().unwrap().undo.len(), 1);
+
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(*s.doc().unwrap().wb, *before);
+}
+
+#[test]
+fn move_columns_can_reorder_left_and_ignores_drops_inside_the_selection() {
+    let mut s = s();
+    s.execute("range.setValues", json!({"range": "A1", "values": [["A", "B", "C", "D", "E"]]})).unwrap();
+    s.execute("sheet.moveColumns", json!({"cols": "D:E", "before": 1})).unwrap();
+    assert_eq!(
+        (0..5).map(|col| v(&s, &CellRef::new(0, col).a1())).collect::<Vec<_>>(),
+        vec!["A".into(), "D".into(), "E".into(), "B".into(), "C".into()]
+    );
+    let undo = s.doc().unwrap().undo.len();
+    s.execute("sheet.moveColumns", json!({"cols": "B:C", "before": 2})).unwrap();
+    assert_eq!(s.doc().unwrap().undo.len(), undo);
+}
+
+#[test]
+fn insert_copied_cells_inserts_rows_columns_and_blocks() {
+    // Issue #21: Insert Copied Cells.
+    let mut s = s();
+    s.execute("range.setValues", json!({"range": "A1", "values": [[1], [2], [3], [4], [5]]})).unwrap();
+    s.execute("cell.set", json!({"cell": "B2", "input": "=A2*10"})).unwrap();
+    s.execute("edit.copy", json!({"range": "2:2"})).unwrap();
+    s.execute("selection.set", json!({"range": "C4"})).unwrap();
+    s.execute("home.insertCopiedCells", json!({})).unwrap();
+    assert_eq!(v(&s, "A4"), Value::Number(2.0));
+    assert_eq!(v(&s, "B4"), Value::Number(20.0), "the formula follows its new row");
+    assert_eq!(v(&s, "A5"), Value::Number(4.0));
+    assert_eq!(v(&s, "A6"), Value::Number(5.0));
+    assert_eq!(s.doc().unwrap().selection.current(), gridcraft_core::RangeRef::rows(3, 3));
+    // One undo step puts everything back.
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(v(&s, "A4"), Value::Number(4.0));
+    assert_eq!(v(&s, "A6"), Value::Empty);
+    // Whole columns.
+    s.execute("edit.copy", json!({"range": "A:A"})).unwrap();
+    s.execute("home.insertCopiedCells", json!({"at": "A1"})).unwrap();
+    assert_eq!(v(&s, "A3"), Value::Number(3.0));
+    assert_eq!(v(&s, "B3"), Value::Number(3.0));
+    assert_eq!(v(&s, "C2"), Value::Number(20.0), "the old column B moved right");
+    // A block shifts cells right.
+    s.execute("cell.set", json!({"cell": "F1", "input": "x"})).unwrap();
+    s.execute("cell.set", json!({"cell": "G1", "input": "y"})).unwrap();
+    s.execute("edit.copy", json!({"range": "F1"})).unwrap();
+    s.execute("home.insertCopiedCells", json!({"at": "G1", "shift": "right"})).unwrap();
+    assert_eq!(v(&s, "G1"), Value::from("x"));
+    assert_eq!(v(&s, "H1"), Value::from("y"));
+    assert!(s.clipboard.is_none(), "inserting ends copy mode");
+    s.execute("edit.copy", json!({"range": "F1"})).unwrap();
+    assert!(s.execute("home.insertCopiedCells", json!({"shift": "up"})).is_err());
+}
+
+#[test]
+fn insert_cut_cells_moves_whole_rows() {
+    let mut s = s();
+    s.execute("range.setValues", json!({"range": "A1", "values": [[1], [2], [3], [4], [5]]})).unwrap();
+    s.execute("cell.set", json!({"cell": "C1", "input": "=A5"})).unwrap();
+    // Up: row 5 goes above row 2.
+    s.execute("edit.cut", json!({"range": "5:5"})).unwrap();
+    s.execute("home.insertCopiedCells", json!({"at": "A2"})).unwrap();
+    let col: Vec<Value> = (1..=6).map(|r| v(&s, &format!("A{r}"))).collect();
+    assert_eq!(col, [1.0, 5.0, 2.0, 3.0, 4.0].map(Value::Number).into_iter().chain([Value::Empty]).collect::<Vec<_>>());
+    assert_eq!(v(&s, "C1"), Value::Number(5.0), "references follow the moved cells");
+    assert!(s.clipboard.is_none());
+    // Down: row 1 goes above row 4.
+    s.execute("edit.cut", json!({"range": "1:1"})).unwrap();
+    s.execute("home.insertCopiedCells", json!({"at": "A4"})).unwrap();
+    let col: Vec<Value> = (1..=5).map(|r| v(&s, &format!("A{r}"))).collect();
+    assert_eq!(col, [5.0, 2.0, 1.0, 3.0, 4.0].map(Value::Number).to_vec());
+    assert_eq!(s.doc().unwrap().selection.current(), gridcraft_core::RangeRef::rows(2, 2));
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(v(&s, "A1"), Value::Number(1.0));
+    // Inside itself, and a cut block, are refused without changing anything.
+    s.execute("edit.cut", json!({"range": "2:4"})).unwrap();
+    assert!(s.execute("home.insertCopiedCells", json!({"at": "A3"})).is_err());
+    s.execute("edit.cut", json!({"range": "A1:A2"})).unwrap();
+    assert!(s.execute("home.insertCopiedCells", json!({"at": "B5"})).is_err());
+    assert_eq!(v(&s, "A1"), Value::Number(1.0));
+    assert_eq!(v(&s, "B5"), Value::Empty);
+}
+
+#[test]
 fn inserting_or_deleting_cells_cancels_copy_mode() {
     let mut s = s();
     s.execute("range.setValues", json!({"range": "A1", "values": [[1], [2], [3]]})).unwrap();
@@ -450,6 +710,39 @@ fn fill_series() {
     s.execute("cell.set", json!({"cell": "C1", "input": "Item 9"})).unwrap();
     s.execute("edit.autoFill", json!({"source": "C1", "target": "C1:C2"})).unwrap();
     assert_eq!(v(&s, "C2"), Value::from("Item 10"));
+}
+
+#[test]
+fn ctrl_drag_fill_swaps_copy_and_series() {
+    // Issue #264: Ctrl+drag fills a lone number as a series, and copies what a plain drag extends.
+    let mut s = s();
+    s.execute("cell.set", json!({"cell": "A1", "input": "7"})).unwrap();
+    s.execute("edit.autoFill", json!({"source": "A1", "target": "A1:A4"})).unwrap();
+    assert_eq!(v(&s, "A4"), Value::Number(7.0), "a plain drag copies a lone number");
+    s.execute("edit.autoFill", json!({"source": "A1", "target": "A1:A4", "mode": "alternate"})).unwrap();
+    assert_eq!(v(&s, "A2"), Value::Number(8.0));
+    assert_eq!(v(&s, "A4"), Value::Number(10.0));
+    // Upward too.
+    s.execute("cell.set", json!({"cell": "B5", "input": "7"})).unwrap();
+    s.execute("edit.autoFill", json!({"source": "B5", "target": "B3:B5", "mode": "alternate"})).unwrap();
+    assert_eq!(v(&s, "B3"), Value::Number(5.0));
+    // A two-number series, a list entry and text with a number are copied.
+    s.execute("range.setValues", json!({"range": "C1", "values": [[1], [3]]})).unwrap();
+    s.execute("edit.autoFill", json!({"source": "C1:C2", "target": "C1:C4", "mode": "alternate"})).unwrap();
+    assert_eq!(v(&s, "C3"), Value::Number(1.0));
+    assert_eq!(v(&s, "C4"), Value::Number(3.0));
+    s.execute("cell.set", json!({"cell": "D1", "input": "Mon"})).unwrap();
+    s.execute("edit.autoFill", json!({"source": "D1", "target": "D1:D3", "mode": "alternate"})).unwrap();
+    assert_eq!(v(&s, "D3"), Value::from("Mon"));
+    s.execute("cell.set", json!({"cell": "E1", "input": "Item 9"})).unwrap();
+    s.execute("edit.autoFill", json!({"source": "E1", "target": "E1:E2", "mode": "alternate"})).unwrap();
+    assert_eq!(v(&s, "E2"), Value::from("Item 9"));
+    // Plain text copies either way; an empty source clears.
+    s.execute("cell.set", json!({"cell": "F1", "input": "abc"})).unwrap();
+    s.execute("edit.autoFill", json!({"source": "F1", "target": "F1:F2", "mode": "alternate"})).unwrap();
+    assert_eq!(v(&s, "F2"), Value::from("abc"));
+    s.execute("edit.autoFill", json!({"source": "G1", "target": "G1:G3", "mode": "alternate"})).unwrap();
+    assert_eq!(v(&s, "G3"), Value::Empty);
 }
 
 #[test]
@@ -510,6 +803,63 @@ fn sort_and_filter() {
     s.execute("data.filter", json!({})).unwrap();
     let r = s.execute("data.filterBy", json!({"column": "B", "custom": {"op": ">", "value": "1"}})).unwrap();
     assert_eq!(r["hiddenRows"], 1);
+}
+
+/// Turning the filter on with only the header row selected filters the data below it (#201).
+#[test]
+fn filter_on_a_selected_header_row_covers_the_data_below() {
+    let mut s = s();
+    s.execute(
+        "range.setValues",
+        json!({"range": "A1", "values": [["Name", "City"], ["Ana", "SP"], ["Bia", "RJ"], ["Caio", "SP"], ["Duda", "BH"], ["Eva", "RJ"]]}),
+    )
+    .unwrap();
+    s.execute("selection.set", json!({"range": "A1:B1"})).unwrap();
+    let r = s.execute("data.filter", json!({})).unwrap();
+    assert_eq!(r["range"], "A1:B6");
+    let r = s.execute("data.filterBy", json!({"column": "B", "values": ["SP"]})).unwrap();
+    assert_eq!(r["hiddenRows"], 3);
+    // An explicit range is taken as given.
+    s.execute("data.filter", json!({})).unwrap();
+    let r = s.execute("data.filter", json!({"range": "A1:B1"})).unwrap();
+    assert_eq!(r["range"], "A1:B1");
+}
+
+#[test]
+fn protection_passwords_stay_out_of_the_journal_and_recorded_scripts() {
+    const PW: &str = "synthetic-pw-7319";
+    let mut s = s();
+    s.execute("automate.recordActions", json!({})).unwrap();
+    s.execute("review.protectSheet", json!({"password": PW, "formatCells": true})).unwrap();
+    // The password still protects the sheet; the refused attempt isn't journaled.
+    assert!(s.execute("review.unprotectSheet", json!({})).is_err());
+    s.execute("review.unprotectSheet", json!({"password": PW})).unwrap();
+    s.execute("automate.recordActions", json!({"stop": true, "name": "Lock"})).unwrap();
+
+    let journal = serde_json::to_string(&s.journal).unwrap();
+    assert!(!journal.contains(PW), "{journal}");
+    let params = |s: &Session, id: &str| s.journal.iter().find(|(c, _)| c == id).map(|(_, p)| p.clone());
+    assert_eq!(params(&s, "review.protectSheet"), Some(json!({"formatCells": true})));
+    assert_eq!(params(&s, "review.unprotectSheet"), Some(json!({})));
+
+    // The recorded script is stored in the workbook, so it is saved with the file.
+    let bytes = crate::io::save_bytes(&s.doc().unwrap().wb, "book.xlsx").unwrap();
+    let (reopened, _) = crate::io::open_bytes("book.xlsx", &bytes).unwrap();
+    let script = reopened.names.iter().find(|n| n.name == "_sc_scripts").map(|n| n.formula.clone()).unwrap();
+    assert!(script.contains("review.protectSheet"), "{script}");
+    assert!(!script.contains(PW), "{script}");
+
+    // The journal still replays: protection without a password, then unprotection.
+    let mut r = self::s();
+    for (id, p) in s.journal.iter().filter(|(id, _)| !id.starts_with("automate.")) {
+        r.execute(id, p.clone()).unwrap_or_else(|e| panic!("{id}: {e}"));
+        let prot = r.doc().unwrap().wb.active().unwrap().protection.clone();
+        if id == "review.protectSheet" {
+            assert!(prot.as_ref().is_some_and(|p| p.format_cells && p.password.is_none()), "{prot:?}");
+        }
+    }
+    assert!(r.doc().unwrap().wb.active().unwrap().protection.is_none());
+    s.execute("automate.runScript", json!({"name": "Lock"})).unwrap();
 }
 
 /// A sheet with locked data in A1:B3, unlocked cells in D1:D3 and row 10, then protected.
@@ -607,6 +957,27 @@ fn hidden_formulas_stay_hidden_on_protected_sheets() {
 }
 
 #[test]
+fn case_sensitive_sort_puts_lowercase_first() {
+    let mut s = s();
+    s.execute("range.setValues", json!({"range": "A1", "values": [["b"], ["B"], ["Ab"], ["a"], ["aB"], ["A"]]})).unwrap();
+    s.execute("data.sort", json!({"range": "A1:A6", "header": false, "matchCase": true, "keys": [{"column": "A"}]})).unwrap();
+    let col: Vec<Value> = (1..=6).map(|r| v(&s, &format!("A{r}"))).collect();
+    assert_eq!(col, ["a", "A", "aB", "Ab", "b", "B"].map(Value::from));
+}
+
+#[test]
+fn remove_duplicates_compares_shown_text() {
+    let mut s = s();
+    s.execute("range.setValues", json!({"range": "A1", "values": [["Date", "Price"], ["2006-03-08", 1.01], ["2006-03-08", 1.02]]})).unwrap();
+    s.execute("home.numberFormat", json!({"range": "A3", "code": "mmm d, yyyy"})).unwrap();
+    s.execute("home.numberFormat", json!({"range": "B2:B3", "code": "0.0"})).unwrap();
+    let r = s.execute("data.removeDuplicates", json!({"range": "A1:A3", "header": true})).unwrap();
+    assert_eq!(r["removed"], 0);
+    let r = s.execute("data.removeDuplicates", json!({"range": "B1:B3", "header": true})).unwrap();
+    assert_eq!(r["removed"], 1);
+}
+
+#[test]
 fn formatting_and_styles() {
     let mut s = s();
     s.execute("selection.set", json!({"range": "A1:B2"})).unwrap();
@@ -645,6 +1016,255 @@ fn tables_and_structured_refs() {
     assert_eq!(v(&s, "D1"), Value::Number(7.0));
     s.execute("table.totalRow", json!({"on": true, "table": "Table1"})).unwrap();
     assert_eq!(v(&s, "B4"), Value::Number(7.0));
+}
+
+#[test]
+fn slicer_filters_table() {
+    let mut s = s();
+    s.execute("range.setValues", json!({"range": "A1", "values": [["Region", "Qty"], ["East", 2], ["West", 5], ["East", 3], ["North", 1]]})).unwrap();
+    s.execute("insert.table", json!({"range": "A1:B5", "name": "Sales"})).unwrap();
+    s.execute("selection.set", json!({"cell": "A2"})).unwrap();
+
+    // A new slicer on the Region column filters nothing (all values selected).
+    let r = s.execute("insert.slicer", json!({})).unwrap();
+    let id = r["slicer"].as_u64().unwrap() as u32;
+    let hidden = |s: &Session| {
+        let d = s.doc().unwrap();
+        let sh = d.wb.active().unwrap();
+        (1..=4).filter(|row| sh.is_row_hidden(*row)).count() // data rows are sheet rows 1..=4 (0-based header at 0)
+    };
+    assert_eq!(hidden(&s), 0);
+    {
+        let d = s.doc().unwrap();
+        let sh = d.wb.active().unwrap();
+        assert_eq!(sh.slicers.len(), 1);
+        assert_eq!(sh.slicers[0].column, "Region");
+    }
+
+    // Single-click "East": only the two East rows remain (West row 2 and North row 4 hidden).
+    s.execute("slicer.toggle", json!({"slicer": id, "value": "East"})).unwrap();
+    assert_eq!(hidden(&s), 2);
+    {
+        let d = s.doc().unwrap();
+        let sh = d.wb.active().unwrap();
+        assert!(sh.is_row_hidden(2) && sh.is_row_hidden(4));
+        assert!(!sh.is_row_hidden(1) && !sh.is_row_hidden(3));
+    }
+
+    // Ctrl-click "West" adds it: East + West visible, only North hidden.
+    s.execute("slicer.toggle", json!({"slicer": id, "value": "West", "multi": true})).unwrap();
+    assert_eq!(hidden(&s), 1);
+
+    // Clear restores everything.
+    s.execute("slicer.clear", json!({"slicer": id})).unwrap();
+    assert_eq!(hidden(&s), 0);
+    assert!(s.doc().unwrap().wb.active().unwrap().slicers[0].selected.is_none());
+
+    // Deleting the slicer drops it and clears its filter.
+    s.execute("slicer.toggle", json!({"slicer": id, "value": "East"})).unwrap();
+    assert_eq!(hidden(&s), 2);
+    s.execute("slicer.delete", json!({"slicer": id})).unwrap();
+    assert_eq!(hidden(&s), 0);
+    assert!(s.doc().unwrap().wb.active().unwrap().slicers.is_empty());
+
+    // A bad value is rejected, not panicked.
+    assert!(s.execute("slicer.toggle", json!({"value": "Nowhere"})).is_err());
+}
+
+#[test]
+fn table_header_formatted_as_accounting_keeps_its_text_as_the_column_name() {
+    // Found by the command-sequence fuzzer: the accounting format pads text (` 172.4 `), and that
+    // padded text became the column name, which the XLSX writer then put in the header cell.
+    let mut s = s();
+    s.execute("range.setValues", json!({"range": "A1", "values": [[172.4, "Qty"], [1, 2]]})).unwrap();
+    s.execute("home.accounting", json!({"range": "A1:B2"})).unwrap();
+    s.execute("insert.table", json!({"range": "A1:B2", "header": true})).unwrap();
+    let d = s.doc().unwrap();
+    let t = &d.wb.sheet(0).unwrap().tables[0];
+    let names: Vec<_> = t.columns.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["172.4", "Qty"]);
+    assert_eq!(v(&s, "A1"), Value::text("172.4"));
+    reopen(&mut s);
+    assert_eq!(v(&s, "A1"), Value::text("172.4"));
+}
+
+#[test]
+fn a_formula_moved_into_a_table_header_becomes_its_text() {
+    // Found by the command-sequence fuzzer: deleting a header row moved a formula into the
+    // header, which kept it while the XLSX writer wrote the column name there instead.
+    let mut s = s();
+    s.execute("range.setValues", json!({"range": "A1", "values": [["Item", "Qty"], ["x", "=1+1"], ["y", 5]]})).unwrap();
+    s.execute("insert.table", json!({"range": "A1:B3", "header": true})).unwrap();
+    s.execute("home.deleteRows", json!({"rows": "1:1"})).unwrap();
+    let d = s.doc().unwrap();
+    let sh = d.wb.sheet(0).unwrap();
+    assert_eq!(sh.cell(CellRef::new(0, 1)).and_then(|x| x.formula.clone()), None);
+    assert_eq!(v(&s, "B1"), Value::text("2"));
+    let names: Vec<_> = sh.tables[0].columns.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["x", "2"]);
+}
+
+#[test]
+fn a_whole_column_table_without_headers_stays_on_the_sheet() {
+    // Found by the command-sequence fuzzer: the inserted header row pushed the table's end past
+    // the last row, so the table had an invalid range and was dropped from the XLSX file.
+    let mut s = s();
+    s.execute("insert.table", json!({"range": "A:C", "header": false})).unwrap();
+    let d = s.doc().unwrap();
+    assert_eq!(d.wb.sheet(0).unwrap().tables[0].range.a1(), "A:C");
+    s.execute("cell.set", json!({"cell": "E1", "input": "=ROWS(Table1)"})).unwrap();
+    assert_eq!(v(&s, "E1"), Value::Number(1_048_575.0));
+    reopen(&mut s);
+    assert_eq!(v(&s, "E1"), Value::Number(1_048_575.0));
+    s.execute("cell.set", json!({"cell": "F1048576", "input": "x"})).unwrap();
+    let e = s.execute("insert.table", json!({"range": "F:F", "header": false})).unwrap_err();
+    assert!(e.to_string().contains("pushed off the end"), "{e}");
+}
+
+#[test]
+fn autosum_over_whole_rows_is_one_undo_step_within_the_data() {
+    // Found by the command-sequence fuzzer: AutoSum over rows `3:5` ran one `cell.set` per column
+    // (16,384 undo steps, so undo never got back to the start).
+    let mut s = s();
+    s.execute("range.setValues", json!({"range": "A3", "values": [[1, 2], [3, 4], [5, 6]]})).unwrap();
+    s.execute("formulas.autoSum", json!({"range": "3:5"})).unwrap();
+    assert_eq!(v(&s, "A6"), Value::Number(9.0));
+    assert_eq!(v(&s, "B6"), Value::Number(12.0));
+    let d = s.doc().unwrap();
+    assert_eq!(d.undo.len(), 2);
+    assert_eq!(d.wb.active().unwrap().cells.used_range().unwrap().a1(), "A3:B6");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(v(&s, "A6"), Value::Empty);
+    assert_eq!(v(&s, "B6"), Value::Empty);
+}
+
+#[test]
+fn insert_and_delete_cells_never_shift_part_of_a_table() {
+    // Found by the command-sequence fuzzer: Delete Cells moved part of a table's cells (so two
+    // tables overlapped) or narrowed a table without dropping its columns, and a table without
+    // headers pushed the cells of another table down from under it.
+    let mut s = s();
+    s.execute("range.setValues", json!({"range": "D8", "values": [["a", "b", "c"], [1, 2, 3], [4, 5, 6]]})).unwrap();
+    s.execute("insert.table", json!({"range": "D8:F10", "header": true})).unwrap();
+    for (cmd, range, shift) in [
+        ("home.deleteCells", "E9:G9", "left"),
+        ("home.deleteCells", "E9", "up"),
+        ("home.insertCells", "C9:D9", "down"),
+        ("home.deleteCells", "D8:F8", "up"),
+        ("home.insertCells", "A9:B9", "right"),
+    ] {
+        let e = s.execute(cmd, json!({"range": range, "shift": shift})).unwrap_err();
+        assert!(e.to_string().contains("shift cells in a table"), "{cmd} {range} {shift}: {e}");
+    }
+    // Whole table columns: the table loses (or gains) columns with them.
+    s.execute("home.deleteCells", json!({"range": "E7:E12", "shift": "left"})).unwrap();
+    let names = |s: &Session| -> Vec<String> { s.doc().unwrap().wb.sheet(0).unwrap().tables[0].columns.iter().map(|c| c.name.clone()).collect() };
+    assert_eq!(names(&s), ["a", "c"]);
+    assert_eq!(s.doc().unwrap().wb.sheet(0).unwrap().tables[0].range.a1(), "D8:E10");
+    s.execute("home.insertCells", json!({"range": "E8:E10", "shift": "right"})).unwrap();
+    assert_eq!(names(&s), ["a", "Column2", "c"]);
+    assert_eq!(v(&s, "E8"), Value::text("Column2"));
+    let e = s.execute("insert.table", json!({"range": "H1:H2", "name": "T1"})).unwrap_err();
+    assert!(e.to_string().contains("not valid"), "a cell reference isn't a table name: {e}");
+    let e = s.execute("insert.table", json!({"range": "D5:F6", "header": false})).unwrap_err();
+    assert!(e.to_string().contains("shift cells in a table"), "{e}");
+}
+
+#[test]
+fn undo_and_redo_keep_the_watch_window_list() {
+    // Found by the command-sequence fuzzer: the list lives in the workbook but isn't an edit, so
+    // undoing an earlier edit swapped in a snapshot without it.
+    let mut s = s();
+    s.execute("cell.set", json!({"cell": "A1", "input": "1"})).unwrap();
+    s.execute("formulas.watchWindow", json!({"add": "Sheet1!A1"})).unwrap();
+    let watched = |s: &mut Session| -> Vec<String> {
+        let rows = s.execute("formulas.watchWindow", json!({})).unwrap();
+        rows.as_array().unwrap().iter().map(|r| r["cell"].as_str().unwrap().to_string()).collect()
+    };
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(watched(&mut s), ["Sheet1!A1"], "kept after undo");
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(watched(&mut s), ["Sheet1!A1"], "kept after redo");
+}
+
+#[test]
+fn merging_over_a_spill_blocks_it_and_unmerging_unblocks_it() {
+    // Found by the command-sequence fuzzer: merges changed no cell the spill depended on, so the
+    // spill went on as if the merged cells were free (a full recalc gave #SPILL!).
+    let mut s = s();
+    s.execute("cell.set", json!({"cell": "A1", "input": "=SEQUENCE(3)"})).unwrap();
+    s.execute("home.mergeCenter", json!({"range": "A2:B3"})).unwrap();
+    assert_eq!(v(&s, "A1"), Value::Error(gridcraft_core::CellError::Spill));
+    s.execute("home.mergeCenter", json!({"range": "A2:B3"})).unwrap();
+    assert_eq!(v(&s, "A1"), Value::Number(1.0));
+    assert_eq!(v(&s, "A3"), Value::Number(3.0));
+}
+
+#[test]
+fn multi_cell_array_formulas_and_tables_dont_overlap() {
+    // Found by the command-sequence fuzzer: an array over a table header lost its value to the
+    // header name written as text, then showed #SPILL! (and reloaded from XLSX differently).
+    let mut s = s();
+    s.execute("range.setValues", json!({"range": "B2", "values": [["Item", "Qty"], ["x", 2]]})).unwrap();
+    s.execute("insert.table", json!({"range": "B2:C3", "header": true})).unwrap();
+    s.execute("selection.set", json!({"range": "B1:B2"})).unwrap();
+    let e = s.execute("cell.set", json!({"input": "=1", "array": true})).unwrap_err();
+    assert!(e.to_string().contains("aren't allowed in tables"), "{e}");
+    assert_eq!(v(&s, "B2"), Value::text("Item"));
+    s.execute("selection.set", json!({"range": "E1:E2"})).unwrap();
+    s.execute("cell.set", json!({"input": "=1", "array": true})).unwrap();
+    let e = s.execute("insert.table", json!({"range": "E2:F3"})).unwrap_err();
+    assert!(e.to_string().contains("aren't allowed in tables"), "{e}");
+    // One-cell arrays are fine.
+    s.execute("selection.set", json!({"range": "C3"})).unwrap();
+    s.execute("cell.set", json!({"input": "=5", "array": true})).unwrap();
+    assert_eq!(v(&s, "C3"), Value::Number(5.0));
+}
+
+#[test]
+fn copies_of_a_long_named_sheet_get_unique_names() {
+    // Found by the command-sequence fuzzer: `name (2)` was cut to 31 characters, so the second
+    // copy of a 30-character name took the first copy's name.
+    let mut s = s();
+    s.execute("sheet.rename", json!({"sheet": 0, "name": "Long name of a sheet 31 chars!"})).unwrap();
+    s.execute("sheet.move", json!({"sheet": 0, "to": 1, "copy": true})).unwrap();
+    s.execute("sheet.move", json!({"sheet": 0, "to": 2, "copy": true})).unwrap();
+    let d = s.doc().unwrap();
+    let names: Vec<&str> = d.wb.sheets.iter().map(|x| x.name.as_str()).collect();
+    assert_eq!(names, ["Long name of a sheet 31 chars!", "Long name of a sheet 31 cha (2)", "Long name of a sheet 31 cha (3)"]);
+}
+
+#[test]
+fn row_and_column_inserts_move_legacy_array_ranges() {
+    // Found by the command-sequence fuzzer: the formula cell moved but its array range stayed,
+    // so the array covered the wrong cells (and read back from XLSX as #SPILL!).
+    let mut s = s();
+    s.execute("cell.set", json!({"cell": "A1", "input": "7"})).unwrap();
+    s.execute("selection.set", json!({"range": "C3:D3"})).unwrap();
+    s.execute("cell.set", json!({"input": "=$A$1*2", "array": true})).unwrap();
+    s.execute("home.insertColumns", json!({"cols": "B:B"})).unwrap();
+    s.execute("home.insertRows", json!({"rows": "1:1"})).unwrap();
+    let d = s.doc().unwrap();
+    let f = d.wb.sheet(0).unwrap().cell(CellRef::new(3, 3)).and_then(|x| x.formula.clone()).unwrap();
+    assert_eq!(f.array, Some(gridcraft_core::RangeRef::parse("D4:E4").unwrap()));
+    assert_eq!(v(&s, "E4"), Value::Number(14.0));
+    reopen(&mut s);
+    assert_eq!(v(&s, "E4"), Value::Number(14.0));
+}
+
+#[test]
+fn part_of_a_legacy_array_cant_be_changed() {
+    // Found by the command-sequence fuzzer: a value typed into an array cell showed in the
+    // workbook, but the file kept the array there (Excel refuses the edit).
+    let mut s = s();
+    s.execute("selection.set", json!({"range": "A1:A3"})).unwrap();
+    s.execute("cell.set", json!({"input": "=5", "array": true})).unwrap();
+    let e = s.execute("range.setValues", json!({"range": "A2", "values": [[13]]})).unwrap_err();
+    assert!(e.to_string().contains("part of an array"), "{e}");
+    assert_eq!(v(&s, "A2"), Value::Number(5.0));
+    // Replacing the whole array is fine.
+    s.execute("range.setValues", json!({"range": "A1", "values": [[1], [2], [3]]})).unwrap();
+    assert_eq!(v(&s, "A2"), Value::Number(2.0));
 }
 
 #[test]
@@ -872,6 +1492,46 @@ fn ods_import_never_reuses_source_as_save_target() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// Open a `;` CSV by path (a double-click), edit, Save: the file keeps its `;` separator.
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn saving_an_opened_semicolon_csv_keeps_semicolons() {
+    #[allow(clippy::disallowed_methods)] // native-only test: a unique temp dir name
+    let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let dir = std::env::temp_dir().join(format!("gridcraft-csv-{}-{nonce}", std::process::id()));
+    std::fs::create_dir(&dir).unwrap();
+    let path = dir.join("cut list.csv");
+    std::fs::write(&path, "1;511;184;P3_L1_led;2162PE;16;;1244121406FB\r\n1;562;510;P3_pod;2162PE;19;;124412140710\r\n").unwrap();
+    let mut s = s();
+    s.execute("file.open", json!({"path": path})).unwrap();
+    s.execute("cell.set", json!({"cell": "B2", "input": "600"})).unwrap();
+    s.execute("file.save", json!({})).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "1;511;184;P3_L1_led;2162PE;16;;1244121406FB\r\n1;600;510;P3_pod;2162PE;19;;124412140710\r\n"
+    );
+    let exported = dir.join("export.csv");
+    s.execute("file.exportCsv", json!({"path": exported})).unwrap();
+    assert!(std::fs::read_to_string(&exported).unwrap().starts_with("1;511;184;"));
+    let saved = s.execute("file.saveBytes", json!({"format": "csv"})).unwrap();
+    let bytes = crate::io::base64_decode(saved["base64"].as_str().unwrap()).unwrap();
+    assert!(bytes.starts_with(b"1;511;184;"));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn validation_formulas_are_relative_and_see_the_new_value() {
+    let mut s = s();
+    s.execute("range.setValues", json!({"range": "B1", "values": [[1], [100]]})).unwrap();
+    s.execute("data.validation", json!({"range": "A1:A2", "type": "custom", "formula1": "=A1>10"})).unwrap();
+    s.execute("data.validation", json!({"range": "C1:C2", "type": "whole", "operator": "lessOrEqual", "formula1": "=B1"})).unwrap();
+    let ok = |s: &mut Session, cell: &str, input: &str| s.execute("data.validate", json!({"cell": cell, "input": input})).unwrap()["ok"] == true;
+    assert!(ok(&mut s, "A1", "20"));
+    assert!(!ok(&mut s, "A2", "5"));
+    assert!(ok(&mut s, "C2", "50"));
+    assert!(!ok(&mut s, "C1", "50"));
+}
+
 #[test]
 fn samples_build() {
     for (name, _) in crate::sample::SAMPLES {
@@ -1036,10 +1696,116 @@ fn every_command_survives_empty_params() {
     }
 }
 
+fn fmt_of(s: &Session, a: &str) -> String {
+    let wb = &s.doc().unwrap().wb;
+    let sh = wb.active().unwrap();
+    wb.styles.get(sh.style_id(CellRef::parse(a).unwrap())).num_fmt.as_str().to_string()
+}
+
+#[test]
+fn checkboxes_keep_values_toggle_and_delete_in_two_passes() {
+    // Issue #196.
+    let mut s = s();
+    s.execute("cell.set", json!({"cell": "B1", "input": "hi"})).unwrap();
+    s.execute("cell.set", json!({"cell": "C1", "input": "TRUE"})).unwrap();
+    s.execute("insert.checkbox", json!({"range": "A1:B2"})).unwrap();
+    assert_eq!(v(&s, "A1"), Value::Bool(false), "an empty cell starts unchecked");
+    assert_eq!(v(&s, "B1"), Value::from("hi"), "other values stay");
+    s.execute("cell.toggleCheckbox", json!({"cell": "A1"})).unwrap();
+    assert_eq!(v(&s, "A1"), Value::Bool(true));
+    // Space over a selection toggles only checkbox cells; an emptied checkbox counts as FALSE.
+    s.execute("cell.set", json!({"cell": "A2", "input": ""})).unwrap();
+    s.execute("selection.set", json!({"range": "A2:C2"})).unwrap();
+    s.execute("cell.toggleCheckbox", json!({})).unwrap();
+    assert_eq!(v(&s, "A2"), Value::Bool(true));
+    s.execute("selection.set", json!({"range": "C1"})).unwrap();
+    s.execute("cell.toggleCheckbox", json!({})).unwrap();
+    assert_eq!(v(&s, "C1"), Value::Bool(true), "a plain TRUE is not a checkbox");
+    // Delete: checked boxes are unchecked first, then the boxes go.
+    s.execute("edit.clearContents", json!({"range": "A1:A2"})).unwrap();
+    assert_eq!((v(&s, "A1"), v(&s, "A2")), (Value::Bool(false), Value::Bool(false)));
+    assert_eq!(fmt_of(&s, "A1"), "checkbox");
+    s.execute("edit.clearContents", json!({"range": "A1:A2"})).unwrap();
+    assert_eq!(v(&s, "A1"), Value::Empty);
+    assert_ne!(fmt_of(&s, "A1"), "checkbox");
+    // Clear Formats removes the box and keeps the value (B2 was checked by the selection toggle).
+    s.execute("edit.clearFormats", json!({"range": "B2"})).unwrap();
+    assert_eq!(v(&s, "B2"), Value::Bool(true));
+    assert_ne!(fmt_of(&s, "B2"), "checkbox");
+}
+
+#[test]
+fn checkboxes_survive_xlsx_as_cell_controls() {
+    let mut s = s();
+    s.execute("insert.checkbox", json!({"range": "A1:A2"})).unwrap();
+    s.execute("cell.toggleCheckbox", json!({"cell": "A1"})).unwrap();
+    s.execute("cell.set", json!({"cell": "B1", "input": "0.5"})).unwrap();
+    reopen(&mut s);
+    assert_eq!(fmt_of(&s, "A1"), "checkbox");
+    assert_eq!(fmt_of(&s, "A2"), "checkbox");
+    assert_eq!(fmt_of(&s, "B1"), "General");
+    assert_eq!(v(&s, "A1"), Value::Bool(true));
+    assert_eq!(v(&s, "A2"), Value::Bool(false));
+}
+
+#[test]
+fn file_options_reports_settings_and_asks_for_the_options_page() {
+    let mut s = Session::new();
+    // No workbook: nothing to report, but still no error.
+    assert_eq!(s.execute("file.options", json!({})).unwrap(), json!({"calculation": null}));
+    s.take_ui_requests();
+    s.new_workbook();
+    s.execute("formulas.calculationOptions", json!({"mode": "manual", "iterative": true})).unwrap();
+    let before = s.active().unwrap().wb.clone();
+    let r = s.execute("file.options", json!({})).unwrap();
+    assert_eq!(r["calculation"]["mode"], "manual");
+    assert_eq!(r["calculation"]["iterative"], true);
+    assert!(matches!(s.take_ui_requests().as_slice(), [crate::UiRequest::Dialog(name, _)] if name == "options"));
+    assert_eq!(s.active().unwrap().wb, before, "Options never changes the workbook");
+}
+
 fn reopen(s: &mut Session) {
     let r = s.execute("file.saveBytes", json!({"format": "xlsx"})).unwrap();
     let b64 = r["base64"].as_str().unwrap().to_string();
     s.execute("file.open", json!({"name": "x.xlsx", "base64": b64})).unwrap();
+}
+
+#[test]
+fn calculation_options_enable_iterative_calculation() {
+    let mut s = s();
+    let near = |s: &Session, a: &str, want: f64| {
+        let got = v(s, a).as_f64().unwrap_or(f64::NAN);
+        assert!((got - want).abs() < 0.002, "{a} = {:?}", v(s, a));
+    };
+    s.execute("cell.set", json!({"cell": "A1", "input": "=(A2+10)/2"})).unwrap();
+    s.execute("cell.set", json!({"cell": "A2", "input": "=A1"})).unwrap();
+    assert_eq!(v(&s, "A1"), Value::Error(gridcraft_core::CellError::Circ));
+    assert!(!s.doc().unwrap().calc.circular.is_empty());
+    // Switching it on recalculates the loop.
+    let r = s.execute("formulas.calculationOptions", json!({"iterative": true})).unwrap();
+    assert_eq!(r, json!({"mode": "Automatic", "iterative": true, "maxIterations": 100, "maxChange": 0.001}));
+    near(&s, "A1", 10.0);
+    near(&s, "A2", 10.0);
+    assert!(s.doc().unwrap().calc.circular.is_empty());
+    // Empty params change nothing and report the settings.
+    let r = s.execute("formulas.calculationOptions", json!({})).unwrap();
+    assert_eq!(r["iterative"], true);
+    // Limits are kept within Excel's: 1–32767 iterations, a non-negative change.
+    let r = s.execute("formulas.calculationOptions", json!({"maxIterations": 0, "maxChange": -0.5})).unwrap();
+    assert_eq!((r["maxIterations"].as_u64(), r["maxChange"].as_f64()), (Some(1), Some(0.5)));
+    let r = s.execute("formulas.calculationOptions", json!({"maxIterations": 100000, "maxChange": 0.0001})).unwrap();
+    assert_eq!((r["maxIterations"].as_u64(), r["maxChange"].as_f64()), (Some(32767), Some(0.0001)));
+    // Saved with the workbook.
+    reopen(&mut s);
+    let calc = s.doc().unwrap().wb.calc.clone();
+    assert_eq!((calc.iterative, calc.max_iterations, calc.max_change), (true, 32767, 0.0001));
+    near(&s, "A1", 10.0);
+    // Undo brings the previous settings back.
+    s.execute("formulas.calculationOptions", json!({"iterative": false})).unwrap();
+    assert_eq!(v(&s, "A1"), Value::Error(gridcraft_core::CellError::Circ));
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(s.doc().unwrap().wb.calc.iterative);
+    near(&s, "A1", 10.0);
 }
 
 fn chart_data(s: &mut Session) {
@@ -1086,6 +1852,31 @@ fn every_chart_kind_survives_xlsx() {
             }
         }
     }
+}
+
+#[test]
+fn scatter_of_two_columns_is_one_series_with_the_first_as_x() {
+    let mut s = s();
+    s.execute("range.setValues", json!({"range": "A1", "values": [["X", "Y"], [1, 10], [2, 20], [3, 30]]})).unwrap();
+    s.execute("insert.chart", json!({"type": "scatter", "range": "A1:B4"})).unwrap();
+    let c = s.doc().unwrap().wb.active().unwrap().charts[0].clone();
+    assert_eq!(c.series.len(), 1);
+    assert_eq!(c.series[0].values, "Sheet1!$B$2:$B$4");
+    assert_eq!(c.series[0].categories.as_deref(), Some("Sheet1!$A$2:$A$4"));
+    // Select Data on the scatter chart and Switch Row/Column rebuild the series the same way.
+    s.execute("chart.selectData", json!({"range": "A2:B4"})).unwrap();
+    let c = s.doc().unwrap().wb.active().unwrap().charts[0].clone();
+    assert_eq!(c.series.len(), 1);
+    assert_eq!(c.series[0].categories.as_deref(), Some("Sheet1!$A$2:$A$4"));
+    s.execute("range.setValues", json!({"range": "D1", "values": [[1, 2, 3, 4], [10, 20, 30, 40]]})).unwrap();
+    s.execute("chart.selectData", json!({"range": "D1:G2"})).unwrap();
+    s.execute("chart.switchRowColumn", json!({})).unwrap();
+    s.execute("chart.switchRowColumn", json!({})).unwrap();
+    let c = s.doc().unwrap().wb.active().unwrap().charts[0].clone();
+    assert!(c.by_rows);
+    assert_eq!(c.series.len(), 1);
+    assert_eq!(c.series[0].values, "Sheet1!$D$2:$G$2");
+    assert_eq!(c.series[0].categories.as_deref(), Some("Sheet1!$D$1:$G$1"));
 }
 
 #[test]
@@ -1143,6 +1934,45 @@ fn switch_row_column_on_a_chart_read_from_a_file() {
 }
 
 #[test]
+fn chart_trendlines_are_added_saved_and_removed() {
+    use gridcraft_model::TrendlineKind;
+    let mut s = s();
+    chart_data(&mut s);
+    s.execute("insert.chart", json!({"type": "line", "range": "A1:E7"})).unwrap();
+    let chart = |s: &Session| s.doc().unwrap().wb.active().unwrap().charts[0].clone();
+    s.execute("chart.addElement", json!({"element": "trendline", "series": 1, "type": "linearForecast", "displayEquation": true})).unwrap();
+    s.execute("chart.addElement", json!({"element": "trendline", "series": 1, "type": "polynomial", "order": 9})).unwrap();
+    s.execute("chart.addElement", json!({"element": "trendline", "series": 3, "type": "movingAverage", "period": 3})).unwrap();
+    let c = chart(&s);
+    assert!(c.series[0].trendlines.is_empty());
+    let t = &c.series[1].trendlines;
+    assert_eq!((t.len(), t[0].kind, t[0].forward, t[0].display_equation), (2, TrendlineKind::Linear, 2.0, true));
+    assert_eq!(t[1].kind, TrendlineKind::Polynomial(6), "order clamps to Excel's 2..6");
+    assert_eq!(c.series[3].trendlines[0].kind, TrendlineKind::MovingAverage(3));
+    let info = s.execute("document.inspect", json!({})).unwrap();
+    assert_eq!(info["sheets"][0]["charts"][0]["trendlines"], json!(["Linear", "Polynomial(6)", "MovingAverage(3)"]));
+    assert!(s.execute("chart.addElement", json!({"element": "trendline", "series": 9})).is_err());
+    assert!(s.execute("chart.addElement", json!({"element": "trendline", "type": "cubic"})).is_err());
+    reopen(&mut s);
+    let after = chart(&s);
+    assert_eq!(after.series[1].trendlines, c.series[1].trendlines);
+    assert_eq!(after.series[3].trendlines, c.series[3].trendlines);
+    s.execute("chart.addElement", json!({"element": "trendline", "on": false})).unwrap();
+    assert!(chart(&s).series.iter().all(|se| se.trendlines.is_empty()));
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(chart(&s).series[1].trendlines.len(), 2);
+}
+
+#[test]
+fn trendlines_are_refused_on_charts_that_cannot_show_them() {
+    let mut s = s();
+    chart_data(&mut s);
+    s.execute("insert.chart", json!({"type": "pie", "range": "A1:B7"})).unwrap();
+    assert!(s.execute("chart.addElement", json!({"element": "trendline"})).is_err());
+    assert!(s.doc().unwrap().wb.active().unwrap().charts[0].series[0].trendlines.is_empty());
+}
+
+#[test]
 fn switch_row_column_with_whole_column_refs_is_bounded() {
     let mut s = s();
     s.execute("range.setValues", json!({"range": "A1", "values": [["", "North", "South"], ["Mon", 10, 14], ["Tue", 12, 15], ["Wed", 14, 16]]}))
@@ -1188,761 +2018,6 @@ fn ink_strokes_and_ink_to_shape() {
     s.execute("draw.stroke", json!({"points": [[0.0, 0.0], [50.0, 10.0], [120.0, 30.0]]})).unwrap();
     assert_eq!(s.execute("draw.inkToShape", json!({})).unwrap()["kind"], "Line");
     assert!(s.execute("draw.stroke", json!({"points": [[1.0, 1.0]]})).is_err());
-}
-
-fn set_locale(s: &mut Session, p: serde_json::Value) {
-    s.execute("app.setLocale", p).unwrap();
-}
-
-fn text(s: &Session, a: &str) -> String {
-    let d = s.doc().unwrap();
-    crate::display::cell_text(&d.wb, d.wb.active().unwrap(), CellRef::parse(a).unwrap())
-}
-
-#[test]
-fn regional_input_and_display_follow_the_region() {
-    let mut s = s();
-    set_locale(&mut s, json!({"regionalFormat": "pt-BR", "formulaLanguage": "en-US"}));
-    s.execute("cell.set", json!({"cell": "A1", "inputLocal": "=SUM(1,5;2)"})).unwrap();
-    assert_eq!(v(&s, "A1"), Value::Number(3.5));
-    assert_eq!(text(&s, "A1"), "3,5");
-    let r = s.execute("cell.get", json!({"cell": "A1"})).unwrap();
-    assert_eq!(r["formula"], "=SUM(1.5,2)");
-    assert_eq!(r["formulaLocal"], "=SUM(1,5;2)");
-    // Programmatic input stays canonical.
-    s.execute("cell.set", json!({"cell": "A2", "input": "=SUM(1.5,2)"})).unwrap();
-    assert_eq!(v(&s, "A2"), Value::Number(3.5));
-}
-
-#[test]
-fn invalid_locale_is_rejected_without_partial_change() {
-    let mut s = s();
-    set_locale(&mut s, json!({"regionalFormat": "de-DE"}));
-    let before = s.locale();
-    let err = s.execute("app.setLocale", json!({"regionalFormat": "pt-BR", "uiLanguage": "xx-ZZ"})).unwrap_err();
-    assert_eq!(err.code(), "invalid-locale");
-    assert_eq!(s.locale().regional.tag, before.regional.tag);
-    assert_eq!(s.locale().regional.tag, "de-DE");
-    assert_eq!(s.prefs.regional_format, "de-DE");
-}
-
-#[test]
-fn manual_mode_leaves_values_stale_after_a_locale_change() {
-    let mut s = s();
-    s.execute("cell.set", json!({"cell": "A1", "input": "=1.5&\"\""})).unwrap();
-    assert_eq!(v(&s, "A1"), Value::text("1.5"));
-    s.execute("formulas.calculationOptions", json!({"mode": "manual"})).unwrap();
-    set_locale(&mut s, json!({"regionalFormat": "pt-BR", "formulaLanguage": "en-US"}));
-    assert_eq!(v(&s, "A1"), Value::text("1.5"));
-    s.execute("formulas.calculateNow", json!({})).unwrap();
-    assert_eq!(v(&s, "A1"), Value::text("1,5"));
-}
-
-#[test]
-fn automatic_mode_recalculates_after_a_locale_change() {
-    let mut s = s();
-    s.execute("cell.set", json!({"cell": "A1", "input": "=1.5&\"\""})).unwrap();
-    set_locale(&mut s, json!({"regionalFormat": "pt-BR", "formulaLanguage": "en-US"}));
-    assert_eq!(v(&s, "A1"), Value::text("1,5"));
-}
-
-#[test]
-fn a_locale_change_does_not_dirty_a_clean_document() {
-    let mut s = s();
-    assert!(!s.doc().unwrap().is_dirty());
-    set_locale(&mut s, json!({"regionalFormat": "pt-BR", "formulaLanguage": "en-US"}));
-    assert!(!s.doc().unwrap().is_dirty());
-}
-
-#[test]
-fn csv_export_uses_the_region_list_separator_and_decimal() {
-    let mut s = s();
-    s.execute("cell.set", json!({"cell": "A1", "input": "1.5"})).unwrap();
-    s.execute("cell.set", json!({"cell": "B1", "input": "2"})).unwrap();
-    set_locale(&mut s, json!({"regionalFormat": "pt-BR", "formulaLanguage": "en-US"}));
-    let bytes = crate::io::save_bytes(&s.doc().unwrap().wb, "book.csv").unwrap();
-    assert_eq!(String::from_utf8_lossy(&bytes).trim_end(), "1,5;2");
-    let bytes = crate::io::save_bytes_with(&s.doc().unwrap().wb, "book.csv", Some(b'\t')).unwrap();
-    assert_eq!(String::from_utf8_lossy(&bytes).trim_end(), "1,5\t2");
-}
-
-#[test]
-fn error_codes_are_stable() {
-    use crate::EngineError as E;
-    assert_eq!(E::UnknownCommand("x".into()).code(), "unknown-command");
-    assert_eq!(E::Disabled("x".into(), "r".into()).code(), "command-disabled");
-    assert_eq!(E::BadParams { cmd: "x".into(), msg: "m".into() }.code(), "bad-params");
-    assert_eq!(E::NoDocument.code(), "no-document");
-    assert_eq!(E::Other("m".into()).code(), "other");
-    assert_eq!(E::InvalidFormula("m".into()).code(), "invalid-formula");
-    assert_eq!(E::InvalidLocale("m".into()).code(), "invalid-locale");
-    assert_eq!(E::Protected.code(), "protected-sheet");
-    assert!(E::Protected.args().is_empty());
-    assert!(E::Protected.to_string().contains("protected sheet"));
-    assert_eq!(E::Disabled("x".into(), "r".into()).args(), vec![("command", "x".to_string()), ("reason", "r".to_string())]);
-    assert_eq!(E::BadParams { cmd: "x".into(), msg: "m".into() }.args(), vec![("command", "x".to_string()), ("message", "m".to_string())]);
-    assert_eq!(E::Other("m".into()).to_string(), "m");
-    assert_eq!(E::EncryptedWorkbook("x".into()).code(), "encrypted-workbook");
-    assert_eq!(E::LegacyWorkbook("x".into()).code(), "legacy-workbook");
-    assert_eq!(E::ImportFailed { name: "x".into(), message: "m".into() }.code(), "import-failed");
-    assert_eq!(E::ImportOnlyFormat("ODS").code(), "import-only-format");
-    assert_eq!(E::TextBoxTooLong(32_767).code(), "text-box-too-long");
-    assert_eq!(E::ChartRangeTooLarge.code(), "chart-range-too-large");
-    assert_eq!(E::TextBoxTooLong(32_767).args(), vec![("limit", "32767".into())]);
-    assert!(E::ChartRangeTooLarge.args().is_empty());
-}
-
-#[test]
-fn formula_text_round_trips_through_the_region_dialect() {
-    let region = gridcraft_locale::region("de-DE").unwrap();
-    let d = gridcraft_locale::Dialect { names: gridcraft_locale::language("en-US").unwrap(), regional: region };
-    let local = crate::locale::to_local_formula("=SUM(1.5,A1)", &d, &gridcraft_formula::no_names);
-    assert_eq!(local, "=SUM(1,5;A1)");
-    assert_eq!(crate::locale::from_local_formula(&local, &d, &gridcraft_formula::no_names).unwrap(), "=SUM(1.5,A1)");
-    assert!(crate::locale::from_local_formula("=1+*2", &d, &gridcraft_formula::no_names).is_err());
-}
-
-#[test]
-fn workbook_names_win_over_local_function_names_and_booleans() {
-    let mut s = s();
-    set_locale(&mut s, json!({"formulaLanguage": "es-ES", "regionalFormat": "es-ES"}));
-    // A name's own definition reads before the name exists (`SUMA` is SUM there), and the
-    // journal replays it that way although the name exists once the command has run.
-    s.execute("formulas.defineName", json!({"name": "SUMA", "refersToLocal": "=SUMA(1;2)"})).unwrap();
-    assert_eq!(s.journal.last().map(|(_, p)| p["refersTo"].clone()), Some(json!("=SUM(1,2)")));
-    s.execute("cell.set", json!({"cell": "C1", "input": "7"})).unwrap();
-    s.execute("formulas.defineName", json!({"name": "FALSO", "refersTo": "=Sheet1!$C$1"})).unwrap();
-    s.execute("cell.set", json!({"cell": "A1", "inputLocal": "=FALSO+SUMA+VERDADERO"})).unwrap();
-    assert_eq!(s.journal.last().map(|(_, p)| p["input"].clone()), Some(json!("=FALSO+SUMA+TRUE")));
-    let r = s.execute("cell.get", json!({"cell": "A1"})).unwrap();
-    assert_eq!(r["formulaLocal"], "=FALSO+SUMA+VERDADERO");
-    assert_eq!(v(&s, "A1"), Value::Number(11.0));
-    // A built-in spelled like a name is written so it still reads as the built-in.
-    s.execute("cell.set", json!({"cell": "A2", "input": "=SUM(1,FALSE)"})).unwrap();
-    let shown = s.execute("cell.get", json!({"cell": "A2"})).unwrap()["formulaLocal"].clone();
-    assert_eq!(shown, "=_xlfn.SUM(1;_xlfn.FALSE())");
-    s.execute("cell.set", json!({"cell": "A3", "inputLocal": shown})).unwrap();
-    assert_eq!(v(&s, "A3"), Value::Number(1.0));
-    // FORMULATEXT and INDIRECT read and write with the same names.
-    s.execute("cell.set", json!({"cell": "B1", "input": "=FORMULATEXT(A1)"})).unwrap();
-    assert_eq!(v(&s, "B1"), Value::text("=FALSO+SUMA+VERDADERO"));
-    s.execute("cell.set", json!({"cell": "B2", "input": "=INDIRECT(\"FALSO\")"})).unwrap();
-    assert_eq!(v(&s, "B2"), Value::Number(7.0));
-}
-
-#[test]
-fn languages_and_international_payloads() {
-    let mut s = s();
-    let l = s.execute("app.languages", json!({})).unwrap();
-    assert!(l["languages"].as_array().unwrap().iter().any(|x| x["tag"] == "en-US"));
-    assert!(l["regions"].as_array().unwrap().iter().any(|x| x["tag"] == "pt-BR"));
-    set_locale(&mut s, json!({"regionalFormat": "de-DE", "formulaLanguage": "en-US"}));
-    let i = s.execute("app.getInternational", json!({})).unwrap();
-    assert_eq!(i["decimal"], ",");
-}
-
-#[test]
-fn pt_br_ui_and_formula_language() {
-    let mut s = Session::new();
-    s.set_locale(crate::LocalePrefs { ui_language: Some("pt-BR".into()), regional_format: Some("pt-BR".into()), ..Default::default() }).unwrap();
-    s.new_workbook();
-    assert_eq!(s.doc().unwrap().wb.sheets[0].name, "Planilha1");
-    s.execute("cell.set", json!({"cell": "A1", "inputLocal": "=SOMA(1,5;2)"})).unwrap();
-    assert_eq!(s.execute("cell.get", json!({"cell": "A1"})).unwrap()["formula"], "=SUM(1.5,2)");
-    assert_eq!(text(&s, "A1"), "3,5");
-    assert_eq!(s.execute("cell.get", json!({"cell": "A1"})).unwrap()["formulaLocal"], "=SOMA(1,5;2)");
-    s.execute("home.insertSheet", json!({})).unwrap();
-    let d = s.doc().unwrap();
-    assert!(d.wb.sheets.iter().any(|sh| sh.name == "Planilha2"));
-}
-
-#[test]
-fn subtotal_grand_row_label() {
-    let mut s = s();
-    for (a, x) in [("A1", "g"), ("B1", "n"), ("A2", "a"), ("B2", "1"), ("A3", "b"), ("B3", "2")] {
-        s.execute("cell.set", json!({"cell": a, "input": x})).unwrap();
-    }
-    s.execute("data.subtotal", json!({"range": "A1:B3", "groupBy": "A", "columns": ["B"]})).unwrap();
-    let grand_sum = (0..8).map(|r| text(&s, &format!("A{}", r + 1))).find(|t| t.starts_with("Grand"));
-    assert_eq!(grand_sum.as_deref(), Some("Grand Total"));
-    let mut s2 = self::s();
-    for (a, x) in [("A1", "g"), ("B1", "n"), ("A2", "a"), ("B2", "1"), ("A3", "b"), ("B3", "2")] {
-        s2.execute("cell.set", json!({"cell": a, "input": x})).unwrap();
-    }
-    s2.execute("data.subtotal", json!({"range": "A1:B3", "groupBy": "A", "columns": ["B"], "function": "count"})).unwrap();
-    let grand_count = (0..8).map(|r| text(&s2, &format!("A{}", r + 1))).find(|t| t.starts_with("Grand"));
-    assert_eq!(grand_count.as_deref(), Some("Grand Count"));
-}
-
-fn session_in(prefs: crate::LocalePrefs) -> Session {
-    let mut s = Session::new();
-    s.set_locale(prefs).unwrap();
-    s.new_workbook();
-    s
-}
-
-fn prefs(ui: &str, region: &str) -> crate::LocalePrefs {
-    crate::LocalePrefs { ui_language: Some(ui.into()), regional_format: Some(region.into()), ..Default::default() }
-}
-
-fn region_locale(tag: &str) -> gridcraft_locale::Locale {
-    let inv = gridcraft_locale::INVARIANT;
-    gridcraft_locale::Locale::new(inv.ui, inv.formula, *gridcraft_locale::region(tag).unwrap())
-}
-
-#[test]
-fn csv_open_splits_on_the_region_list_separator() {
-    let pt = region_locale("pt-BR");
-    let (wb, _) = crate::io::open_bytes("a.csv", b"1,5\r\n", &pt).unwrap();
-    let sh = wb.sheet(0).unwrap();
-    assert_eq!(sh.value(CellRef::new(0, 0)), Value::Number(1.5));
-    assert!(sh.value(CellRef::new(0, 1)).is_empty());
-    let (wb, _) = crate::io::open_bytes("a.csv", b"1,5;2,5\r\n", &pt).unwrap();
-    let sh = wb.sheet(0).unwrap();
-    assert_eq!((sh.value(CellRef::new(0, 0)), sh.value(CellRef::new(0, 1))), (Value::Number(1.5), Value::Number(2.5)));
-    // En-US is unchanged: the comma separates fields.
-    let (wb, _) = crate::io::open_bytes("a.csv", b"1,5\r\n", &gridcraft_locale::INVARIANT).unwrap();
-    let sh = wb.sheet(0).unwrap();
-    assert_eq!((sh.value(CellRef::new(0, 0)), sh.value(CellRef::new(0, 1))), (Value::Number(1.0), Value::Number(5.0)));
-    // An explicit delimiter wins over detection.
-    let (wb, _) = crate::io::open_bytes_with("a.csv", b"1,5\r\n", &gridcraft_locale::INVARIANT, Some(b';')).unwrap();
-    assert_eq!(wb.sheet(0).unwrap().value(CellRef::new(0, 0)), Value::text("1,5"));
-}
-
-#[test]
-fn delimiter_params_are_validated() {
-    let mut s = s();
-    for bad in [json!("\""), json!("\n"), json!("\r"), json!("\0"), json!(";;"), json!(""), json!(5), json!(true)] {
-        let err = s.execute("file.saveBytes", json!({"format": "csv", "delimiter": bad})).unwrap_err();
-        assert_eq!(err.code(), "bad-params", "{bad}");
-    }
-    assert!(s.execute("file.saveBytes", json!({"format": "csv", "delimiter": "\t"})).is_ok());
-    let b64 = crate::io::base64_encode(b"a;b\r\n1;2\r\n");
-    let err = s.execute("file.open", json!({"name": "x.csv", "base64": b64, "delimiter": "\""})).unwrap_err();
-    assert_eq!(err.code(), "bad-params");
-    s.execute("file.open", json!({"name": "x.csv", "base64": b64, "delimiter": ";"})).unwrap();
-    assert_eq!(v(&s, "B2"), Value::Number(2.0));
-}
-
-#[test]
-fn text_to_columns_keeps_numbers_typed() {
-    let mut s = session_in(prefs("en-US", "pt-BR"));
-    s.execute("cell.set", json!({"cell": "A1", "input": "1234.5"})).unwrap();
-    s.execute("data.textToColumns", json!({"range": "A1", "other": "|"})).unwrap();
-    assert_eq!(v(&s, "A1"), Value::Number(1234.5));
-}
-
-#[test]
-fn validation_local_conversion_and_typed_lists() {
-    let mut s = session_in(prefs("en-US", "pt-BR"));
-    s.execute("cell.set", json!({"cell": "B1", "input": "1.5"})).unwrap();
-    s.execute("cell.set", json!({"cell": "B2", "input": "2"})).unwrap();
-    s.execute("data.validation", json!({"range": "A1", "type": "list", "formula1": "$B$1:$B$2"})).unwrap();
-    assert_eq!(s.execute("data.validate", json!({"cell": "A1", "inputLocal": "1,5"})).unwrap()["ok"], true);
-    assert_eq!(s.execute("data.validate", json!({"cell": "A1", "inputLocal": "1,6"})).unwrap()["ok"], false);
-    // A literal list may use the region's list separator…
-    s.execute("data.validation", json!({"range": "A2", "type": "list", "formula1Local": "Sim;Não"})).unwrap();
-    assert_eq!(s.execute("data.validate", json!({"cell": "A2", "inputLocal": "Não"})).unwrap()["ok"], true);
-    // …but a broken formula in any other definition is an error, not a literal.
-    let err = s.execute("data.validation", json!({"range": "A3", "type": "custom", "formula1Local": "=1+*2"})).unwrap_err();
-    assert_eq!(err.code(), "invalid-formula");
-    let err = s.execute("data.validation", json!({"range": "A3", "type": "list", "formula1Local": "=1+*2"})).unwrap_err();
-    assert_eq!(err.code(), "invalid-formula");
-}
-
-fn pivot_numbers(s: &Session) -> f64 {
-    let d = s.doc().unwrap();
-    let sh = d.wb.active().unwrap();
-    sh.cells.iter().filter_map(|(_, c)| c.value.as_f64()).sum()
-}
-
-#[test]
-fn pivot_blank_filter_survives_a_language_switch() {
-    let mut s = s();
-    for (a, x) in [("A1", "k"), ("B1", "v"), ("A2", "x"), ("B2", "1"), ("B3", "2")] {
-        s.execute("cell.set", json!({"cell": a, "input": x})).unwrap();
-    }
-    s.execute("insert.pivotTable", json!({"source": "A1:B3", "rows": ["k"], "values": [{"field": "v"}]})).unwrap();
-    s.execute("pivot.filter", json!({"field": "k", "selected": [null]})).unwrap();
-    let before = pivot_numbers(&s);
-    assert_eq!(before, 4.0);
-    set_locale(&mut s, json!({"uiLanguage": "pt-PT", "regionalFormat": "pt-PT"}));
-    s.execute("pivot.refresh", json!({})).unwrap();
-    assert_eq!(pivot_numbers(&s), before);
-    set_locale(&mut s, json!({"uiLanguage": "de-DE", "regionalFormat": "de-DE"}));
-    s.execute("pivot.refresh", json!({})).unwrap();
-    assert_eq!(pivot_numbers(&s), before);
-}
-
-#[test]
-fn pivot_auto_caption_follows_the_function_across_languages() {
-    let mut s = s();
-    for (a, x) in [("A1", "k"), ("B1", "v"), ("A2", "x"), ("B2", "1")] {
-        s.execute("cell.set", json!({"cell": a, "input": x})).unwrap();
-    }
-    s.execute("insert.pivotTable", json!({"source": "A1:B2", "rows": ["k"], "values": [{"field": "v"}]})).unwrap();
-    set_locale(&mut s, json!({"uiLanguage": "de-DE", "regionalFormat": "de-DE"}));
-    s.execute("pivot.valueSettings", json!({"index": 0, "func": "count"})).unwrap();
-    let name = s.execute("pivot.list", json!({})).unwrap().to_string();
-    assert!(!name.contains("Sum of v"), "{name}");
-    assert!(name.contains("Anzahl von v"), "{name}");
-}
-
-#[test]
-fn custom_separators_are_restricted() {
-    let mut s = s();
-    for bad in ["+", "a", "1", "\"", "(", "\n", "ab", ""] {
-        let err = s.execute("app.setLocale", json!({"useSystemSeparators": false, "decimalSeparator": bad})).unwrap_err();
-        assert!(matches!(err.code(), "invalid-locale" | "bad-params"), "{bad}");
-    }
-    assert_eq!(s.prefs.decimal_separator, ".");
-    s.execute("app.setLocale", json!({"useSystemSeparators": false, "decimalSeparator": ",", "thousandsSeparator": "\u{2019}"})).unwrap();
-    assert_eq!(s.locale().regional.decimal, ',');
-}
-
-#[test]
-fn formula_length_is_capped() {
-    let mut s = s();
-    let long = format!("={}1", "1+".repeat(5000));
-    assert_eq!(s.execute("cell.set", json!({"cell": "A1", "input": long})).unwrap_err().code(), "invalid-formula");
-    assert_eq!(s.execute("cell.set", json!({"cell": "A1", "inputLocal": long})).unwrap_err().code(), "invalid-formula");
-    assert!(s.execute("formulas.evaluate", json!({"formulaLocal": long})).is_err());
-    let d = gridcraft_locale::INVARIANT.dialect();
-    assert!(crate::locale::from_local_formula(&long, &d, &gridcraft_formula::no_names).is_err());
-    assert!(s.execute("cell.set", json!({"cell": "A1", "input": "=1+1"})).is_ok());
-}
-
-#[test]
-fn constant_errors_round_trip_in_the_formula_language() {
-    let mut s = session_in(prefs("de-DE", "de-DE"));
-    s.execute("cell.set", json!({"cell": "A1", "input": "#VALUE!"})).unwrap();
-    assert!(v(&s, "A1").is_error());
-    let local = s.execute("cell.get", json!({"cell": "A1"})).unwrap()["inputLocal"].as_str().unwrap().to_string();
-    assert_ne!(local, "#VALUE!");
-    s.execute("cell.set", json!({"cell": "B1", "inputLocal": local})).unwrap();
-    assert_eq!(v(&s, "B1"), v(&s, "A1"));
-}
-
-#[test]
-fn csv_import_decides_cell_types_by_region_once() {
-    let mut s = session_in(prefs("en-US", "pt-BR"));
-    s.execute("data.getData", json!({"text": "a;b\r\n1,5;1.5\r\n", "local": true})).unwrap();
-    let reg = gridcraft_locale::region("pt-BR").unwrap();
-    let expect = gridcraft_core::parse::parse_input_in("1.5", gridcraft_core::DateSystem::D1900, reg, gridcraft_locale::INVARIANT.formula).value;
-    assert_eq!(v(&s, "A2"), Value::Number(1.5));
-    assert_eq!(v(&s, "B2"), expect);
-}
-
-#[test]
-fn table_resize_keeps_columns_across_a_language_switch() {
-    let mut s = s();
-    for (a, x) in [("A1", "a"), ("B1", "b"), ("A2", "1"), ("B2", "2")] {
-        s.execute("cell.set", json!({"cell": a, "input": x})).unwrap();
-    }
-    s.execute("insert.table", json!({"range": "A1:B2", "header": true})).unwrap();
-    s.execute("table.resize", json!({"range": "A1:C2"})).unwrap();
-    let name = |s: &Session| s.doc().unwrap().wb.sheets[0].tables[0].columns[2].name.clone();
-    let before = name(&s);
-    set_locale(&mut s, json!({"uiLanguage": "de-DE", "regionalFormat": "de-DE"}));
-    s.execute("table.resize", json!({"range": "A1:C2"})).unwrap();
-    assert_eq!(name(&s), before);
-}
-
-#[test]
-fn table_resize_never_repeats_a_column_name() {
-    // New columns skip every kept or typed name, wherever it sits, and a repeated header is
-    // numbered (structured references need unique names). Header cells show the names.
-    for (table, typed, resized, expect) in [
-        ("A1:B2", [].as_slice(), "B1:C2", ["Column2", "Column3"].as_slice()),
-        ("B1:C2", [].as_slice(), "A1:C2", ["Column3", "Column1", "Column2"].as_slice()),
-        // A cleared header is refilled with its column's default name at once, as in Excel.
-        ("A1:B2", [("A1", ""), ("B1", "")].as_slice(), "A1:C2", ["Column1", "Column2", "Column3"].as_slice()),
-        ("A1:B2", [("A1", ""), ("C1", "Column1")].as_slice(), "A1:C2", ["Column1", "Column2", "Column12"].as_slice()),
-        ("A1:B2", [("C1", "x"), ("D1", "X")].as_slice(), "A1:D2", ["Column1", "Column2", "x", "X2"].as_slice()),
-    ] {
-        let mut s = s();
-        s.execute("insert.table", json!({"range": table, "header": true})).unwrap();
-        for (cell, text) in typed {
-            s.execute("cell.set", json!({"cell": cell, "input": text})).unwrap();
-        }
-        s.execute("table.resize", json!({"table": "Table1", "range": resized})).unwrap();
-        let names: Vec<String> = s.doc().unwrap().wb.sheets[0].tables[0].columns.iter().map(|c| c.name.clone()).collect();
-        assert_eq!(names, expect, "{table} -> {resized}");
-        let r = gridcraft_core::RangeRef::parse(resized).unwrap();
-        let shown: Vec<String> = (r.start.col..=r.end.col).map(|c| v(&s, &CellRef::new(0, c).a1()).display()).collect();
-        assert_eq!(shown, expect, "header cells of {table} -> {resized}");
-    }
-}
-
-#[test]
-fn find_and_replace_work_on_what_the_formula_bar_shows() {
-    let mut s = session_in(prefs("de-DE", "de-DE"));
-    s.execute("cell.set", json!({"cell": "A1", "inputLocal": "=SUMME(B1;C1)"})).unwrap();
-    s.execute("cell.set", json!({"cell": "A2", "inputLocal": "1,5"})).unwrap();
-    assert_eq!(s.execute("edit.find", json!({"what": "SUMME", "lookIn": "formulas"})).unwrap()["cell"], "A1");
-    s.execute("edit.replace", json!({"what": "SUMME", "with": "MITTELWERT"})).unwrap();
-    assert_eq!(s.execute("cell.get", json!({"cell": "A1"})).unwrap()["formula"], "=AVERAGE(B1,C1)");
-    s.execute("edit.replace", json!({"what": "1,5", "with": "2,5"})).unwrap();
-    assert_eq!(v(&s, "A2"), Value::Number(2.5));
-    // En-US keeps its behaviour.
-    let mut e = self::s();
-    e.execute("cell.set", json!({"cell": "A1", "input": "=SUM(B1,C1)"})).unwrap();
-    e.execute("edit.replace", json!({"what": "SUM", "with": "AVERAGE"})).unwrap();
-    assert_eq!(e.execute("cell.get", json!({"cell": "A1"})).unwrap()["formula"], "=AVERAGE(B1,C1)");
-}
-
-#[test]
-fn the_journal_is_canonical_and_skips_preferences() {
-    let mut s = session_in(prefs("de-DE", "de-DE"));
-    s.execute("file.options", json!({})).unwrap();
-    s.execute("cell.set", json!({"cell": "A1", "inputLocal": "=SUMME(1,5;2)"})).unwrap();
-    s.execute("cell.set", json!({"cell": "A2", "inputLocal": "1,5"})).unwrap();
-    s.execute("home.numberFormat", json!({"range": "A2", "numberFormatLocal": "#.##0,00"})).unwrap();
-    assert!(s.journal.iter().all(|(id, _)| id != "app.setLocale" && id != "file.options"));
-    let recorded: Vec<(String, serde_json::Value)> = s.journal.clone();
-    let mut replay = self::s();
-    for (id, p) in &recorded {
-        replay.execute(id, p.clone()).unwrap();
-    }
-    assert_eq!(v(&replay, "A1"), Value::Number(3.5));
-    assert_eq!(v(&replay, "A2"), Value::Number(1.5));
-    let recorded_text = serde_json::to_string(&recorded).unwrap();
-    assert!(!recorded_text.contains("Local"), "{recorded_text}");
-    assert_eq!(s.execute("formulas.recentlyUsed", json!({})).unwrap()[0], "SUM");
-}
-
-#[test]
-fn watch_window_rows_carry_local_fields() {
-    let mut s = session_in(prefs("de-DE", "de-DE"));
-    s.execute("cell.set", json!({"cell": "A1", "inputLocal": "=SUMME(1,5;2)"})).unwrap();
-    let rows = s.execute("formulas.watchWindow", json!({"add": "A1"})).unwrap();
-    assert_eq!(rows[0]["formula"], "=SUM(1.5,2)");
-    assert_eq!(rows[0]["formulaLocal"], "=SUMME(1,5;2)");
-    assert_eq!(rows[0]["text"], "3,5");
-}
-
-#[test]
-fn hidden_formulas_stay_hidden_in_every_spelling() {
-    let mut s = session_in(prefs("de-DE", "de-DE"));
-    s.execute("cell.set", json!({"cell": "A1", "inputLocal": "=SUMME(1,5;2)+\"x\""})).unwrap();
-    s.execute("cell.set", json!({"cell": "B1", "inputLocal": "=SUMME(1,5;3)"})).unwrap();
-    s.execute("home.formatCells", json!({"range": "A1", "style": {"protection": {"locked": true, "hidden": true}}})).unwrap();
-    s.execute("formulas.showFormulas", json!({"on": true})).unwrap();
-    s.execute("review.protectSheet", json!({})).unwrap();
-    let leaks = |v: &serde_json::Value| v.to_string().contains("SUM");
-    // Neither spelling of the formula, nor the input that would reveal it.
-    let a1 = s.execute("cell.get", json!({"cell": "A1"})).unwrap();
-    assert_eq!(a1["formula"], serde_json::Value::Null);
-    assert_eq!(a1["formulaLocal"], serde_json::Value::Null);
-    assert!(!leaks(&a1), "{a1}");
-    assert_eq!(a1["inputLocal"], "#WERT!");
-    // A formula that is not hidden still shows both.
-    let b1 = s.execute("cell.get", json!({"cell": "B1"})).unwrap();
-    assert_eq!(b1["formula"], "=SUM(1.5,3)");
-    assert_eq!(b1["formulaLocal"], "=SUMME(1,5;3)");
-    for local in [false, true] {
-        let r = s.execute("sheet.read", json!({"range": "A1", "formulas": true, "local": local})).unwrap();
-        assert!(!leaks(&r), "{r}");
-    }
-    let r = s.execute("sheet.read", json!({"range": "B1", "formulas": true, "local": true})).unwrap();
-    assert_eq!(r["values"][0][0], "=SUMME(1,5;3)");
-    let w = s.execute("formulas.watchWindow", json!({"add": "A1"})).unwrap();
-    assert_eq!((&w[0]["formula"], &w[0]["formulaLocal"]), (&serde_json::Value::Null, &serde_json::Value::Null));
-    let report = s.execute("formulas.errorChecking", json!({})).unwrap();
-    let row = &report["errors"][0];
-    assert_eq!(row["cell"], "A1");
-    assert_eq!((&row["formula"], &row["formulaLocal"]), (&serde_json::Value::Null, &serde_json::Value::Null));
-    assert_eq!(row["errorLocal"], "#WERT!");
-    assert_eq!(s.execute("formulas.evaluateFormula", json!({"cell": "A1"})).unwrap_err().code(), "protected-sheet");
-    // The formula can't be found or replaced by its text either.
-    assert!(s.execute("edit.find", json!({"what": "SUMME(1,5;2)", "all": true})).is_err());
-    assert_eq!(s.execute("edit.replace", json!({"what": "SUMME(1,5;2)", "with": "X"})).unwrap()["replaced"], 0);
-    let d = s.doc().unwrap();
-    let sh = d.wb.active().unwrap();
-    // With Show Formulas on, only the formula that isn't hidden is shown.
-    let shown = crate::display::cell_text(&d.wb, sh, CellRef::parse("A1").unwrap());
-    assert!(!shown.contains("SUM") && !shown.starts_with('='), "{shown}");
-    assert_eq!(crate::display::cell_text(&d.wb, sh, CellRef::parse("B1").unwrap()), "=SUMME(1,5;3)");
-}
-
-#[test]
-fn input_local_obeys_sheet_protection_like_input() {
-    let mut s = session_in(prefs("de-DE", "de-DE"));
-    s.execute("cell.set", json!({"cell": "A1", "input": "1"})).unwrap();
-    s.execute("range.setValues", json!({"range": "D1", "values": [[1], [2], [3]]})).unwrap();
-    s.execute("home.lockCell", json!({"range": "D1:D3", "on": false})).unwrap();
-    s.execute("review.protectSheet", json!({})).unwrap();
-    let before = s.doc().unwrap().wb.clone();
-    for (id, p) in [
-        ("cell.set", json!({"cell": "A1", "inputLocal": "=SUMME(1,5;2)"})),
-        ("cell.set", json!({"cell": "A1", "input": "=SUM(1.5,2)"})),
-        ("range.fill", json!({"range": "A1:A2", "inputLocal": "1,5"})),
-        ("range.setValues", json!({"range": "A1", "values": [["1,5"]], "local": true})),
-    ] {
-        let e = s.execute(id, p).expect_err(id);
-        assert_eq!(e.code(), "protected-sheet", "{id}");
-        assert_eq!(*s.doc().unwrap().wb, *before, "{id} changed the workbook");
-    }
-    // Unlocked cells still take local input.
-    s.execute("cell.set", json!({"cell": "D1", "inputLocal": "1,5"})).unwrap();
-    assert_eq!(v(&s, "D1"), Value::Number(1.5));
-}
-
-#[test]
-fn undo_and_redo_keep_the_session_locale() {
-    let mut s = s();
-    s.execute("cell.set", json!({"cell": "A1", "input": "1.5"})).unwrap();
-    s.execute("cell.set", json!({"cell": "A1", "input": "2.5"})).unwrap();
-    set_locale(&mut s, json!({"regionalFormat": "de-DE", "formulaLanguage": "en-US"}));
-    s.execute("edit.undo", json!({})).unwrap();
-    assert_eq!(s.doc().unwrap().wb.locale.regional.tag, "de-DE");
-    assert_eq!(text(&s, "A1"), "1,5");
-    s.execute("edit.redo", json!({})).unwrap();
-    assert_eq!(text(&s, "A1"), "2,5");
-}
-
-#[test]
-fn system_locale_applies_only_to_system_prefs() {
-    let mut s = Session::new();
-    s.set_system_locale("de_DE.UTF-8");
-    assert_eq!(s.locale().regional.tag, "de-DE");
-    assert_eq!(s.locale().ui.tag, "de-DE");
-    s.new_workbook();
-    assert_eq!(s.doc().unwrap().wb.locale.regional.tag, "de-DE");
-    set_locale(&mut s, json!({"regionalFormat": "pt-BR"}));
-    s.set_system_locale("fr-FR");
-    assert_eq!(s.locale().regional.tag, "pt-BR");
-    assert_eq!(s.locale().ui.tag, "fr-FR");
-    s.take_ui_requests();
-    s.set_system_locale("fr-FR");
-    assert!(s.take_ui_requests().is_empty());
-}
-
-#[test]
-fn stale_saved_locale_prefs_are_repaired_field_by_field() {
-    let mut s = Session::new();
-    // As loaded from an older or hand-edited prefs file: a language this build lacks and
-    // colliding separators, next to a valid region.
-    s.prefs.ui_language = "xx-XX".into();
-    s.prefs.regional_format = "de-DE".into();
-    s.prefs.use_system_separators = false;
-    s.prefs.decimal_separator = ",".into();
-    s.prefs.thousands_separator = ",".into();
-    s.set_system_locale("pt_BR.UTF-8");
-    assert_eq!(s.prefs.ui_language, "system");
-    assert_eq!(s.prefs.regional_format, "de-DE");
-    assert!(s.prefs.use_system_separators);
-    assert_eq!(s.locale().ui.tag, "pt-BR");
-    assert_eq!(s.locale().regional.tag, "de-DE");
-    // Later partial changes validate against the repaired prefs instead of failing.
-    set_locale(&mut s, json!({"formulaLanguage": "en-US"}));
-    assert_eq!(s.locale().formula.tag, "en-US");
-}
-
-#[test]
-fn content_templates_expand_placeholders_safely() {
-    let de = gridcraft_locale::language("de-DE").unwrap();
-    let loc = gridcraft_locale::Locale::new(de, de, gridcraft_locale::INVARIANT.regional);
-    assert_eq!(crate::locale::content_fmt(&loc, "subtotal_grand", &[("label", "Mittelwert")]), "Gesamtmittelwert");
-    // A placeholder without an argument stays verbatim.
-    assert_eq!(crate::locale::content_fmt(&loc, "subtotal_group", &[("name", "x")]), "x {label}");
-    // Values are inserted literally, never re-scanned.
-    assert_eq!(crate::locale::content_fmt(&loc, "subtotal_group", &[("name", "{label}"), ("label", "T")]), "{label} T");
-}
-
-#[test]
-fn subtotal_labels_follow_the_ui_language() {
-    let mut s = session_in(prefs("de-DE", "de-DE"));
-    for (a, x) in [("A1", "g"), ("B1", "n"), ("A2", "a"), ("B2", "1"), ("A3", "b"), ("B3", "2")] {
-        s.execute("cell.set", json!({"cell": a, "input": x})).unwrap();
-    }
-    s.execute("data.subtotal", json!({"range": "A1:B3", "groupBy": "A", "columns": ["B"], "function": "average"})).unwrap();
-    let labels: Vec<String> = (1..=8).map(|r| text(&s, &format!("A{r}"))).collect();
-    assert!(labels.iter().any(|t| t == "Gesamtmittelwert"), "{labels:?}");
-    let mut s = session_in(prefs("de-DE", "de-DE"));
-    for (a, x) in [("A1", "g"), ("B1", "n"), ("A2", "a"), ("B2", "1"), ("A3", "b"), ("B3", "2")] {
-        s.execute("cell.set", json!({"cell": a, "input": x})).unwrap();
-    }
-    s.execute("data.subtotal", json!({"range": "A1:B3", "groupBy": "A", "columns": ["B"]})).unwrap();
-    let labels: Vec<String> = (1..=8).map(|r| text(&s, &format!("A{r}"))).collect();
-    assert!(labels.iter().any(|t| t == "Gesamtergebnis"), "{labels:?}");
-}
-
-#[test]
-fn international_reports_the_system_locale_the_system_prefs_resolve_to() {
-    let mut s = Session::new();
-    s.set_system_locale("de_DE.UTF-8");
-    set_locale(&mut s, json!({"regionalFormat": "en-US"}));
-    let intl = s.execute("app.getInternational", json!({})).unwrap();
-    assert_eq!(intl["systemLocale"], json!("de_DE.UTF-8"));
-    assert_eq!(intl["systemLanguage"], json!("de-DE"));
-    assert_eq!(intl["systemRegion"], json!("de-DE"));
-    // The stored region is independent of the system one.
-    assert_eq!(intl["regionalFormat"], json!("en-US"));
-    assert_eq!(intl["decimal"], json!("."));
-}
-
-#[test]
-fn formula_auditing_reports_local_text_next_to_canonical() {
-    let mut s = Session::new();
-    s.new_workbook();
-    s.execute("cell.set", json!({"cell": "A1", "input": "=SUM(1.5,2)+\"x\""})).unwrap();
-    set_locale(&mut s, json!({"uiLanguage": "de-DE", "regionalFormat": "de-DE"}));
-    let local_error = s.locale().formula.local_error("#VALUE!").to_string();
-    assert_eq!(local_error, "#WERT!");
-
-    let report = s.execute("formulas.errorChecking", json!({})).unwrap();
-    let row = &report["errors"][0];
-    assert_eq!(row["formula"], json!("=SUM(1.5,2)+\"x\""));
-    assert_eq!(row["formulaLocal"], json!("=SUMME(1,5;2)+\"x\""));
-    assert_eq!(row["error"], json!("#VALUE!"));
-    assert_eq!(row["errorLocal"], json!("#WERT!"));
-
-    let steps = s.execute("formulas.evaluateFormula", json!({"cell": "A1"})).unwrap();
-    assert_eq!(steps["formula"], json!("=SUM(1.5,2)+\"x\""));
-    assert_eq!(steps["formulaLocal"], json!("=SUMME(1,5;2)+\"x\""));
-    assert_eq!(steps["resultLocal"], json!("#WERT!"));
-    let steps = steps["steps"].as_array().unwrap();
-    assert!(steps.iter().any(|st| st["expression"] == json!("SUM(1.5,2)") && st["expressionLocal"] == json!("SUMME(1,5;2)")), "{steps:?}");
-    // A step's value is spelled in the region too.
-    assert!(steps.iter().any(|st| st["expressionLocal"] == json!("SUMME(1,5;2)") && st["valueLocal"] == json!("3,5")), "{steps:?}");
-
-    // The formula to evaluate may be typed in the session's language.
-    let typed = s.execute("formulas.evaluateFormula", json!({"formulaLocal": "=SUMME(1,5;2)"})).unwrap();
-    assert_eq!(typed["formula"], json!("=SUM(1.5,2)"));
-    assert_eq!(typed["resultLocal"], json!("3,5"));
-}
-
-fn cond_formats(s: &Session) -> Vec<gridcraft_model::CfRule> {
-    s.doc().unwrap().wb.sheets[0].cond_formats.iter().map(|c| c.rule.clone()).collect()
-}
-
-#[test]
-fn conditional_format_rules_are_journaled_canonically() {
-    let mut s = session_in(prefs("pt-BR", "pt-BR"));
-    s.execute("home.conditionalFormat", json!({"range": "A1", "rule": {"type": "cellIs", "operator": "greater", "valueLocal": "1,5"}})).unwrap();
-    s.execute("home.conditionalFormat", json!({"range": "A2", "rule": {"type": "cellIs", "operator": "equal", "valueLocal": "Sim"}})).unwrap();
-    s.execute("home.conditionalFormat", json!({"range": "A3", "rule": {"type": "expression", "formulaLocal": "=SE(A1>1,5;1;0)"}})).unwrap();
-    let recorded = serde_json::to_string(&s.journal).unwrap();
-    assert!(!recorded.contains("Local"), "{recorded}");
-    let mut replay = self::s();
-    for (id, p) in s.journal.clone() {
-        replay.execute(&id, p).unwrap();
-    }
-    assert_eq!(cond_formats(&replay), cond_formats(&s));
-    assert!(cond_formats(&replay).iter().any(|r| matches!(r, gridcraft_model::CfRule::CellIs { a, .. } if a == "1.5")));
-}
-
-#[test]
-fn conditional_format_accepts_numeric_local_operands() {
-    let mut s = session_in(prefs("pt-BR", "pt-BR"));
-    s.execute(
-        "home.conditionalFormat",
-        json!({"range": "A1", "rule": {"type": "cellIs", "operator": "between", "valueLocal": 1.5, "value2Local": 3}}),
-    )
-    .unwrap();
-    assert!(
-        matches!(&cond_formats(&s)[0], gridcraft_model::CfRule::CellIs { a, b: Some(b), .. } if a == "1.5" && b == "3"),
-        "{:?}",
-        cond_formats(&s)
-    );
-    let mut replay = self::s();
-    for (id, p) in s.journal.clone() {
-        replay.execute(&id, p).unwrap();
-    }
-    assert_eq!(cond_formats(&replay), cond_formats(&s));
-}
-
-#[test]
-fn region_currency_input_replays_in_any_locale() {
-    let mut s = session_in(prefs("pt-BR", "pt-BR"));
-    s.execute("cell.set", json!({"cell": "A1", "inputLocal": "R$ 3,5"})).unwrap();
-    s.execute("range.setValues", json!({"range": "B1", "values": [["R$ 4,25", "1,5"]], "local": true})).unwrap();
-    let fmt = |s: &mut Session, a: &str| s.execute("cell.get", json!({"cell": a})).unwrap()["numberFormat"].as_str().unwrap().to_string();
-    let want = fmt(&mut s, "A1");
-    assert!(want.contains("R$"), "{want}");
-    let mut replay = self::s();
-    for (id, p) in s.journal.clone() {
-        replay.execute(&id, p).unwrap();
-    }
-    assert_eq!(v(&replay, "A1"), Value::Number(3.5));
-    assert_eq!(v(&replay, "B1"), Value::Number(4.25));
-    assert_eq!(v(&replay, "C1"), Value::Number(1.5));
-    for a in ["A1", "B1", "C1"] {
-        assert_eq!(fmt(&mut replay, a), fmt(&mut s, a), "{a}");
-    }
-}
-
-#[test]
-fn arrays_are_spelled_as_local_array_constants() {
-    let mut s = session_in(prefs("de-DE", "de-DE"));
-    let r = s.execute("formulas.evaluateFormula", json!({"formula": "={1.5,2.5;3,4}"})).unwrap();
-    assert_eq!(r["resultLocal"], json!("{1,5.2,5;3.4}"));
-    let r = s.execute("formulas.evaluateFormula", json!({"formula": "={\"a\",TRUE;#VALUE!,1}"})).unwrap();
-    assert_eq!(r["resultLocal"], json!("{\"a\".WAHR;#WERT!.1}"));
-    // An array that starts with an error is not blank.
-    let r = s.execute("formulas.evaluateFormula", json!({"formula": "={#VALUE!,1}"})).unwrap();
-    assert_eq!(r["resultLocal"], json!("{#WERT!.1}"));
-}
-
-#[test]
-fn csv_import_is_canonical_unless_local() {
-    let mut s = session_in(prefs("en-US", "pt-BR"));
-    s.execute("data.fromTextCsv", json!({"text": "a,b\r\n1.5,2\r\n"})).unwrap();
-    assert_eq!(v(&s, "A2"), Value::Number(1.5));
-    assert_eq!(v(&s, "B2"), Value::Number(2.0));
-    s.execute("data.getData", json!({"text": "a,b\r\n2.5,3\r\n"})).unwrap();
-    assert_eq!(v(&s, "A2"), Value::Number(2.5));
-    s.execute("data.fromTextCsv", json!({"text": "a;b\r\n1,5;2\r\n", "local": true})).unwrap();
-    assert_eq!(v(&s, "A2"), Value::Number(1.5));
-    // Replaying the journal in en-US imports the same data, once per import.
-    let mut replay = self::s();
-    for (id, p) in s.journal.clone() {
-        replay.execute(&id, p).unwrap();
-    }
-    assert_eq!(replay.doc().unwrap().wb.sheets.len(), s.doc().unwrap().wb.sheets.len());
-    assert_eq!(v(&replay, "A2"), Value::Number(1.5));
-}
-
-#[test]
-fn literal_validation_lists_are_quoted_and_canonical() {
-    let mut s = session_in(prefs("en-US", "pt-BR"));
-    s.execute("data.validation", json!({"range": "A1", "type": "list", "formula1Local": "Sim"})).unwrap();
-    s.execute("data.validation", json!({"range": "A2", "type": "list", "formula1Local": "1,5;2"})).unwrap();
-    let dv = |s: &Session, i: usize| s.doc().unwrap().wb.sheets[0].validations[i].f1.clone();
-    assert_eq!(dv(&s, 0), "\"Sim\"");
-    assert_eq!(dv(&s, 1), "\"1.5,2\"");
-    assert_eq!(s.execute("data.validate", json!({"cell": "A1", "inputLocal": "Sim"})).unwrap()["ok"], true);
-    assert_eq!(s.execute("data.validate", json!({"cell": "A1", "inputLocal": "Não"})).unwrap()["ok"], false);
-    assert_eq!(s.execute("data.validate", json!({"cell": "A2", "inputLocal": "1,5"})).unwrap()["ok"], true);
-    assert_eq!(s.execute("data.validate", json!({"cell": "A2", "inputLocal": "5"})).unwrap()["ok"], false);
-    let mut replay = self::s();
-    for (id, p) in s.journal.clone() {
-        replay.execute(&id, p).unwrap();
-    }
-    assert_eq!(dv(&replay, 0), dv(&s, 0));
-    assert_eq!(dv(&replay, 1), dv(&s, 1));
-}
-
-#[test]
-fn define_name_reads_refers_to_in_the_call_locale() {
-    let mut s = s();
-    let r = s.execute("formulas.defineName", json!({"name": "X", "refersToLocal": "=SOMA(1,5;2)", "locale": "pt-BR"})).unwrap();
-    assert_eq!(r["refersTo"], json!("=SUM(1.5,2)"));
-    assert_eq!(r["refersToLocal"], json!("=SOMA(1,5;2)"));
-}
-
-#[test]
-fn name_manager_spells_values_in_the_session_locale() {
-    let mut s = session_in(prefs("de-DE", "de-DE"));
-    s.execute("formulas.defineName", json!({"name": "Rate", "refersTo": "=1.5"})).unwrap();
-    s.execute("formulas.defineName", json!({"name": "Text", "refersTo": "=\"a\"\"b\""})).unwrap();
-    s.execute("formulas.defineName", json!({"name": "Flag", "refersTo": "=TRUE"})).unwrap();
-    let names = s.execute("formulas.nameManager", json!({})).unwrap();
-    let find = |n: &str| names.as_array().unwrap().iter().find(|x| x["name"] == n).unwrap().clone();
-    assert_eq!(find("Rate")["valueLocal"], json!("1,5"));
-    assert_eq!(find("Rate")["scope"], json!("Workbook"));
-    assert_eq!(find("Flag")["valueLocal"], json!("WAHR"));
 }
 
 #[test]
@@ -1995,6 +2070,91 @@ fn xlsb_import_never_reuses_source_as_save_target() {
         assert_eq!(v(&s, "A1"), Value::Number(43.0));
     }
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// A one-sheet Excel 97-2003 workbook ([MS-CFB] container, [MS-XLS] BIFF8 stream) built in code:
+/// A1 = 42 and A2 = `A1*2` with its cached result.
+fn xls_fixture() -> Vec<u8> {
+    fn rec(id: u16, payload: &[u8]) -> Vec<u8> {
+        [&id.to_le_bytes()[..], &(payload.len() as u16).to_le_bytes(), payload].concat()
+    }
+    let bof = |dt: u16| rec(0x0809, &[&0x0600u16.to_le_bytes()[..], &dt.to_le_bytes(), &[0; 12]].concat());
+    let sheet = [
+        bof(0x0010),
+        rec(0x0203, &[&[0u8, 0, 0, 0, 0, 0][..], &42f64.to_le_bytes()].concat()),
+        rec(0x0006, &[&[1u8, 0, 0, 0, 0, 0][..], &84f64.to_le_bytes(), &[0; 6], &[9, 0, 0x44, 0, 0, 0, 0xC0, 0x1E, 2, 0, 0x05]].concat()),
+        rec(0x000A, &[]),
+    ]
+    .concat();
+    let globals = |pos: u32| [bof(0x0005), rec(0x0085, &[&pos.to_le_bytes()[..], &[0, 0, 3, 0], b"Old"].concat()), rec(0x000A, &[])].concat();
+    let stream = [globals(globals(0).len() as u32), sheet].concat();
+    // Sectors: 0 FAT, 1 directory, 2 mini FAT, 3 mini stream container.
+    let mut b = vec![0u8; 512 * 5];
+    let mut put = |at: usize, v: &[u8]| b[at..at + v.len()].copy_from_slice(v);
+    put(0, &[0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]);
+    put(26, &3u16.to_le_bytes());
+    put(30, &9u16.to_le_bytes());
+    put(32, &6u16.to_le_bytes());
+    put(44, &1u32.to_le_bytes());
+    put(48, &1u32.to_le_bytes());
+    put(56, &4096u32.to_le_bytes());
+    put(60, &2u32.to_le_bytes());
+    put(64, &1u32.to_le_bytes());
+    put(68, &0xFFFF_FFFEu32.to_le_bytes());
+    for i in 1..109 {
+        put(76 + i * 4, &0xFFFF_FFFFu32.to_le_bytes());
+    }
+    for (i, v) in [0xFFFF_FFFDu32, 0xFFFF_FFFE, 0xFFFF_FFFE, 0xFFFF_FFFE].iter().enumerate() {
+        put(512 + i * 4, &v.to_le_bytes());
+    }
+    for i in 4..128 {
+        put(512 + i * 4, &0xFFFF_FFFFu32.to_le_bytes());
+    }
+    let minis = stream.len().div_ceil(64);
+    for i in 0..128 {
+        let next = if i + 1 < minis {
+            i as u32 + 1
+        } else if i + 1 == minis {
+            0xFFFF_FFFE
+        } else {
+            0xFFFF_FFFF
+        };
+        put(512 * 3 + i * 4, &next.to_le_bytes());
+    }
+    let entry = |k: usize, name: &str, kind: u8, child: u32, start: u32, size: u32, put: &mut dyn FnMut(usize, &[u8])| {
+        let at = 512 * 2 + k * 128;
+        let units: Vec<u8> = name.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        put(at, &units);
+        put(at + 64, &(units.len() as u16 + 2).to_le_bytes());
+        put(at + 66, &[kind, 1]);
+        put(at + 68, &[0xFF; 8]);
+        put(at + 76, &child.to_le_bytes());
+        put(at + 116, &start.to_le_bytes());
+        put(at + 120, &size.to_le_bytes());
+    };
+    entry(0, "Root Entry", 5, 1, 3, 512, &mut put);
+    entry(1, "Workbook", 2, 0xFFFF_FFFF, 0, stream.len() as u32, &mut put);
+    put(512 * 4, &stream);
+    b
+}
+
+#[test]
+fn xls_import_keeps_formulas_and_never_saves_back_to_xls() {
+    let bytes = xls_fixture();
+    assert_eq!(gridcraft_xlsx::sniff(&bytes), gridcraft_xlsx::Format::Xls);
+    let mut s = s();
+    let r = s.execute("file.open", json!({"name": "legacy.xls", "base64": crate::io::base64_encode(&bytes)})).unwrap();
+    assert!(r["warnings"][0].as_str().unwrap().contains("97-2003"));
+    assert_eq!(r["sheets"], json!(["Old"]));
+    let d = s.doc().unwrap();
+    assert!(d.path.is_none());
+    assert_eq!(d.display_title(), "legacy (imported).xlsx");
+    assert_eq!(v(&s, "A2"), Value::Number(84.0));
+    // The formula is live: editing its input recalculates it.
+    s.execute("cell.set", json!({"cell": "A1", "input": "50"})).unwrap();
+    assert_eq!(v(&s, "A2"), Value::Number(100.0));
+    assert!(s.execute("file.saveBytes", json!({"format": "xls"})).is_err());
+    assert!(s.execute("file.saveBytes", json!({"format": "xlsx"})).is_ok());
 }
 
 #[test]
@@ -2140,54 +2300,6 @@ fn set_anchor_mode_rejects_unknown_kind() {
     assert_eq!(mode(&s), AnchorMode::MoveAndSize);
     s.execute("object.setAnchorMode", json!({"kind": "image", "id": id, "mode": "moveOnly"})).unwrap();
     assert_eq!(mode(&s), AnchorMode::MoveOnly);
-}
-
-#[test]
-fn html_copy_and_export_follow_display_locale() {
-    let mut s = session_in(prefs("pt-BR", "pt-BR"));
-    s.execute("cell.set", json!({"cell": "A1", "input": "=SUM(1.5,2)"})).unwrap();
-    s.execute("cell.set", json!({"cell": "B1", "input": "TRUE"})).unwrap();
-    s.execute("selection.set", json!({"range": "A1:B1"})).unwrap();
-    let copied = s.execute("edit.copy", json!({"html": true})).unwrap();
-    assert!(copied["text"].as_str().unwrap().contains("3,5\tVERDADEIRO"));
-    let html = copied["html"].as_str().unwrap();
-    assert!(html.contains("3,5") && html.contains("VERDADEIRO"));
-    let d = s.doc().unwrap();
-    let html = String::from_utf8(crate::io::save_bytes(&d.wb, "book.html").unwrap()).unwrap();
-    assert!(html.contains("3,5") && html.contains("VERDADEIRO"));
-    let stored = d.wb.active().unwrap().cell(CellRef::parse("A1").unwrap()).unwrap();
-    assert_eq!(stored.formula.as_ref().unwrap().text, "SUM(1.5,2)");
-    s.execute("formulas.showFormulas", json!({"on": true})).unwrap();
-    let copied = s.execute("edit.copy", json!({"html": true})).unwrap();
-    assert!(copied["text"].as_str().unwrap().contains("=SOMA(1,5;2)"));
-    assert!(copied["html"].as_str().unwrap().contains("=SOMA(1,5;2)"));
-}
-
-#[test]
-fn imported_cached_data_stays_canonical_under_local_display() {
-    let mut s = session_in(prefs("pt-BR", "pt-BR"));
-    let bytes = xlsb_fixture();
-    s.execute("file.open", json!({"name": "source.xlsb", "base64": crate::io::base64_encode(&bytes)})).unwrap();
-    assert_eq!(v(&s, "A1"), Value::Number(42.0));
-    let d = s.doc().unwrap();
-    assert_eq!(d.wb.locale.ui.tag, "pt-BR");
-    assert!(d.wb.active().unwrap().cell(CellRef::parse("A1").unwrap()).unwrap().formula.is_none());
-    assert!(matches!(crate::io::save_bytes(&d.wb, "book.xlsb"), Err(crate::EngineError::ImportOnlyFormat("XLSB"))));
-    assert!(matches!(crate::io::save_bytes(&d.wb, "book.ods"), Err(crate::EngineError::ImportOnlyFormat("ODS"))));
-}
-
-#[test]
-fn chart_display_labels_follow_locale_without_changing_series_formulas() {
-    let mut s = session_in(prefs("pt-BR", "pt-BR"));
-    s.execute("range.setValues", json!({"range": "A1", "values": [["Category", "Value"], [1.5, 2], [2.5, 3]]})).unwrap();
-    s.execute("insert.chart", json!({"range": "A1:B3", "type": "column"})).unwrap();
-    let d = s.doc().unwrap();
-    let mut chart = d.wb.active().unwrap().charts[0].clone();
-    chart.series =
-        vec![gridcraft_model::Series { categories: Some("Planilha1!$A$2:$A$3".into()), values: "Planilha1!$B$2:$B$3".into(), ..Default::default() }];
-    let resolved = gridcraft_chart::resolve(&d.wb, 0, &chart);
-    assert_eq!(resolved.categories, vec!["1,5", "2,5"]);
-    assert_eq!(chart.series[0].values, "Planilha1!$B$2:$B$3");
 }
 
 fn original_cell_picture() -> Vec<u8> {
@@ -2429,10 +2541,589 @@ fn notes_comments_and_links_survive_a_json_save() {
     s.execute("insert.link", json!({"cell": "C3", "target": "Sheet1!A1", "tooltip": "jump"})).unwrap();
     let wb = &s.doc().unwrap().wb;
     let bytes = crate::io::save_bytes(wb, "book.json").unwrap();
-    let (back, _) = crate::io::open_bytes("book.json", &bytes, &gridcraft_locale::INVARIANT).unwrap();
+    let (back, _) = crate::io::open_bytes("book.json", &bytes).unwrap();
     let (before, after) = (wb.active().unwrap(), back.active().unwrap());
     assert_eq!((before.comments.len(), before.hyperlinks.len()), (2, 1));
     assert_eq!(after.comments, before.comments);
     assert_eq!(after.hyperlinks, before.hyperlinks);
     assert_eq!(after.cells, before.cells);
+}
+
+#[test]
+fn vertical_alignment_commands_and_roundtrip() {
+    let mut s = s();
+    s.execute("cell.set", json!({"cell": "A1", "input": "top"})).unwrap();
+    s.execute("cell.set", json!({"cell": "A2", "input": "middle"})).unwrap();
+    s.execute("cell.set", json!({"cell": "A3", "input": "bottom"})).unwrap();
+
+    s.execute("selection.set", json!({"range": "A1"})).unwrap();
+    s.execute("home.alignTop", json!({})).unwrap();
+
+    s.execute("selection.set", json!({"range": "A2"})).unwrap();
+    s.execute("home.alignMiddle", json!({})).unwrap();
+
+    s.execute("selection.set", json!({"range": "A3"})).unwrap();
+    s.execute("home.alignBottom", json!({})).unwrap();
+
+    let style_of = |s: &Session, cell: &str| {
+        let d = s.doc().unwrap();
+        d.wb.styles.get(d.wb.active().unwrap().style_id(CellRef::parse(cell).unwrap())).clone()
+    };
+
+    assert_eq!(style_of(&s, "A1").align.v, gridcraft_model::VAlign::Top);
+    assert_eq!(style_of(&s, "A2").align.v, gridcraft_model::VAlign::Center);
+    assert_eq!(style_of(&s, "A3").align.v, gridcraft_model::VAlign::Bottom);
+
+    let d = s.doc().unwrap();
+    let bytes = gridcraft_xlsx::write_xlsx(&d.wb).unwrap();
+    let (reopened, _) = gridcraft_xlsx::read_xlsx(&bytes).unwrap();
+    let reopen_style = |cell: &str| reopened.styles.get(reopened.active().unwrap().style_id(CellRef::parse(cell).unwrap())).clone();
+    assert_eq!(reopen_style("A1").align.v, gridcraft_model::VAlign::Top);
+    assert_eq!(reopen_style("A2").align.v, gridcraft_model::VAlign::Center);
+    assert_eq!(reopen_style("A3").align.v, gridcraft_model::VAlign::Bottom);
+}
+
+/// Icon-set thresholds as read from a file (one per icon, the first the lower bound) decide the
+/// icon; a rule without thresholds uses Excel's defaults (percent 33 and 67) (#235).
+#[test]
+fn icon_set_thresholds_from_files_pick_the_icon() {
+    use gridcraft_model::{CfRule, CfValueKind, CondFormat};
+    let mut s = s();
+    s.execute("range.setValues", json!({"range": "A1", "values": [[0], [10], [20], [30], [100]]})).unwrap();
+    s.execute("home.conditionalFormat", json!({"range": "A1:A5", "rule": {"type": "iconSet", "set": "3Arrows"}})).unwrap();
+    let icon = |s: &Session, a: &str| {
+        let wb = &s.doc().unwrap().wb;
+        crate::cf::CfCache::new().look(wb, 0, CellRef::parse(a).unwrap()).and_then(|l| l.icon).map(|(_, i)| i)
+    };
+    // Defaults: percent of the 0..100 span, so 30 is still the lowest icon.
+    assert_eq!([icon(&s, "A1"), icon(&s, "A4"), icon(&s, "A5")], [Some(0), Some(0), Some(2)]);
+    let sh = std::sync::Arc::make_mut(&mut s.doc_mut().unwrap().wb).sheet_mut(0).unwrap();
+    sh.cond_formats = vec![CondFormat {
+        ranges: vec![gridcraft_core::RangeRef::parse("A1:A5").unwrap()],
+        rule: CfRule::IconSet {
+            set: "3Arrows".into(),
+            thresholds: vec![CfValueKind::Percent(0.0), CfValueKind::Number(10.0), CfValueKind::Number(25.0)],
+            reverse: false,
+            show_value: true,
+        },
+        priority: 1,
+        stop_if_true: false,
+    }];
+    assert_eq!([icon(&s, "A1"), icon(&s, "A2"), icon(&s, "A3"), icon(&s, "A4")], [Some(0), Some(1), Some(1), Some(2)]);
+}
+
+#[test]
+fn row_height_and_column_width_take_a_list_of_areas() {
+    // Issue #341: header drags on a multi-area selection size every selected line in one step.
+    let mut s = s();
+    s.execute("home.columnWidth", json!({"cols": "B:B,D:E", "width": 120})).unwrap();
+    s.execute("home.rowHeight", json!({"rows": "2:2,4:5", "height": 40})).unwrap();
+    let widths: Vec<f32> = (0..6).map(|c| s.doc().unwrap().wb.active().unwrap().col_width(c)).collect();
+    let heights: Vec<f32> = (0..6).map(|r| s.doc().unwrap().wb.active().unwrap().row_height(r)).collect();
+    for c in [1, 3, 4] {
+        assert_eq!(widths[c], 120.0, "column {c}");
+    }
+    for c in [0, 2, 5] {
+        assert_ne!(widths[c], 120.0, "column {c}");
+    }
+    for r in [1, 3, 4] {
+        assert_eq!(heights[r], 40.0, "row {r}");
+    }
+    for r in [0, 2, 5] {
+        assert_ne!(heights[r], 40.0, "row {r}");
+    }
+    assert!(s.execute("home.columnWidth", json!({"cols": "B:B,nope", "width": 50})).is_err());
+    assert_eq!(s.doc().unwrap().wb.active().unwrap().col_width(1), 120.0, "a bad list changes nothing");
+}
+
+#[test]
+fn copying_areas_that_share_rows_or_columns_pastes_them_as_one_block() {
+    // Issue #348: Excel slides lined-up areas together; formulas travel as their values.
+    let mut s = s();
+    s.execute(
+        "range.setValues",
+        json!({"range": "A1", "values": [["a1", "b1", "c1", "d1"], [1, 2, 3, 4], ["a3", "b3", "c3", "d3"], ["a4", "b4", "c4", "d4"]]}),
+    )
+    .unwrap();
+    s.execute("cell.set", json!({"cell": "C2", "input": "=A2+B2"})).unwrap();
+
+    // Same rows, selected right to left: pasted left to right, B left out.
+    s.execute("selection.set", json!({"range": "C1:C2,A1:A2"})).unwrap();
+    let copied = s.execute("edit.copy", json!({})).unwrap();
+    assert_eq!(copied["text"], "a1\tc1\n1\t3\n");
+    s.execute("edit.paste", json!({"at": "F1"})).unwrap();
+    assert_eq!(v(&s, "F1"), Value::text("a1"));
+    assert_eq!(v(&s, "G1"), Value::text("c1"));
+    assert_eq!(v(&s, "F2"), Value::Number(1.0));
+    assert_eq!(v(&s, "G2"), Value::Number(3.0));
+    assert!(s.doc().unwrap().wb.active().unwrap().cell(CellRef::parse("G2").unwrap()).unwrap().formula.is_none());
+    assert!(v(&s, "H1").is_empty());
+    assert_eq!(s.doc().unwrap().selection.current().a1(), "F1:G2");
+    // The source is untouched.
+    assert_eq!(v(&s, "B1"), Value::text("b1"));
+    assert!(s.doc().unwrap().wb.active().unwrap().cell(CellRef::parse("C2").unwrap()).unwrap().formula.is_some());
+
+    // Same columns: stacked, row 2 left out.
+    s.execute("selection.set", json!({"range": "A1:B1,A3:B4"})).unwrap();
+    assert_eq!(s.execute("edit.copy", json!({})).unwrap()["text"], "a1\tb1\na3\tb3\na4\tb4\n");
+    s.execute("edit.paste", json!({"at": "F5"})).unwrap();
+    for (cell, want) in [("F5", "a1"), ("G5", "b1"), ("F6", "a3"), ("G7", "b4")] {
+        assert_eq!(v(&s, cell), Value::text(want), "{cell}");
+    }
+    assert!(v(&s, "F8").is_empty());
+
+    // Whole columns are trimmed to the used rows like a single-area copy.
+    s.execute("edit.undo", json!({"steps": 2})).unwrap();
+    s.execute("selection.set", json!({"range": "B:B,D:D"})).unwrap();
+    assert_eq!(s.execute("edit.copy", json!({})).unwrap()["text"], "b1\td1\n2\t4\nb3\td3\nb4\td4\n");
+}
+
+#[test]
+fn copying_areas_that_do_not_line_up_is_refused_with_a_message() {
+    let mut s = s();
+    s.execute("range.setValues", json!({"range": "A1", "values": [[1, 2, 3], [4, 5, 6], [7, 8, 9]]})).unwrap();
+    s.execute("selection.set", json!({"range": "A1"})).unwrap();
+    s.execute("edit.copy", json!({})).unwrap();
+    for (range, cut) in [("A1:A2,C2:C3", false), ("A1:A2,C1:D3", false), ("A1:A2,A2:A3", false), ("A1:A2,A1:A2", false), ("A1:A2,C1:C2", true)] {
+        s.execute("selection.set", json!({"range": range})).unwrap();
+        let e = s.execute(if cut { "edit.cut" } else { "edit.copy" }, json!({})).unwrap_err().to_string();
+        assert!(e.contains("This action won't work on multiple selections."), "{range}: {e}");
+        assert_eq!(s.clipboard.as_ref().map(|c| c.range.a1()), Some("A1".into()), "{range}: the earlier copy stays");
+    }
+    // Paste Link can't point at a slid-together block.
+    s.execute("selection.set", json!({"range": "A1:A2,C1:C2"})).unwrap();
+    s.execute("edit.copy", json!({})).unwrap();
+    assert!(s.execute("edit.pasteSpecial", json!({"what": "all", "link": true, "at": "E1"})).is_err());
+    assert!(v(&s, "E1").is_empty());
+}
+
+#[test]
+fn editing_a_date_cell_shows_a_date_not_the_serial() {
+    let mut s = s();
+    let at = CellRef::parse("A1").unwrap();
+    s.execute("cell.set", json!({"cell": "A1", "input": "2026-03-04"})).unwrap();
+    {
+        let d = s.doc().unwrap();
+        let sh = d.wb.active().unwrap();
+        assert_eq!(crate::display::edit_text(&d.wb, sh, at), "2026-03-04");
+    }
+    // A format whose text cannot be typed back falls back to ISO.
+    s.execute("home.formatCells", json!({"range": "A1", "style": {"num_fmt": "dddd, mmmm d"}})).unwrap();
+    let d = s.doc().unwrap();
+    let sh = d.wb.active().unwrap();
+    assert_eq!(crate::display::edit_text(&d.wb, sh, at), "2026-03-04");
+    // A time alone falls back to a time, not to day 0 of 1900 ("9 AM" would lose the 36 minutes).
+    let mut s3 = self::s();
+    s3.execute("cell.set", json!({"cell": "A1", "input": "0.4"})).unwrap();
+    s3.execute("home.formatCells", json!({"range": "A1", "style": {"num_fmt": "h AM/PM"}})).unwrap();
+    let d = s3.doc().unwrap();
+    assert_eq!(crate::display::edit_text(&d.wb, d.wb.active().unwrap(), at), "09:36:00");
+    // Plain numbers are untouched.
+    let mut s2 = self::s();
+    s2.execute("cell.set", json!({"cell": "A1", "input": "42"})).unwrap();
+    let d = s2.doc().unwrap();
+    assert_eq!(crate::display::edit_text(&d.wb, d.wb.active().unwrap(), at), "42");
+}
+
+/// A workbook with 42 in A1, saved as `.xlsx` and encrypted with `password`.
+fn encrypted_book(password: &str) -> Vec<u8> {
+    let mut src = s();
+    src.execute("cell.set", json!({"cell": "A1", "input": "42"})).unwrap();
+    let xlsx = crate::io::save_bytes(&src.doc().unwrap().wb, "book.xlsx").unwrap();
+    gridcraft_xlsx::testing::encrypt_workbook(&xlsx, password)
+}
+
+#[test]
+fn encrypted_workbooks_open_with_their_password() {
+    const PW: &str = "synthetic-pw-5521";
+    let b64 = crate::io::base64_encode(&encrypted_book(PW));
+    let open = |s: &mut Session, password: Option<&str>| {
+        let mut p = json!({"name": "Secret.xlsx", "base64": b64});
+        if let Some(pw) = password {
+            p["password"] = json!(pw);
+        }
+        s.execute("file.open", p)
+    };
+    let mut s = Session::new();
+
+    // Programmatic open without a password: an error carrying the marker, never a dialog.
+    let err = open(&mut s, None).unwrap_err().to_string();
+    assert!(err.contains(crate::io::PASSWORD_REQUIRED), "{err}");
+    assert!(err.contains("Secret.xlsx"), "{err}");
+    assert!(s.take_ui_requests().is_empty(), "programmatic calls never open dialogs");
+    assert!(s.documents().is_empty());
+
+    // Wrong and empty passwords are "incorrect", and the password is never quoted.
+    for wrong in ["not-it", ""] {
+        let err = open(&mut s, Some(wrong)).unwrap_err().to_string();
+        assert!(err.contains(crate::io::WRONG_PASSWORD), "{err}");
+        assert!(wrong.is_empty() || !err.contains(wrong), "{err}");
+    }
+    assert!(s.documents().is_empty());
+
+    // The right password opens it: no save path, the file name as title, the notice first.
+    let r = open(&mut s, Some(PW)).unwrap();
+    assert_eq!(r["warnings"][0], crate::io::DECRYPTED_NOTICE);
+    assert_eq!(r["title"], "Secret.xlsx");
+    assert_eq!(v(&s, "A1"), Value::Number(42.0));
+    assert_eq!(s.doc().unwrap().path, None);
+    // The notice belongs in the info bar, not a message box.
+    assert!(!s.take_ui_requests().iter().any(|r| matches!(r, crate::UiRequest::Message(_))));
+    let journal = serde_json::to_string(&s.journal).unwrap();
+    assert!(!journal.contains(PW), "the password never reaches the journal");
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn a_decrypted_workbook_never_overwrites_its_encrypted_original() {
+    const PW: &str = "synthetic-pw-5522";
+    #[allow(clippy::disallowed_methods)] // native-only test: a unique temp dir name
+    let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let dir = std::env::temp_dir().join(format!("gridcraft-encrypted-{}-{nonce}", std::process::id()));
+    std::fs::create_dir(&dir).unwrap();
+    let path = dir.join("Secret.xlsx");
+    let bytes = encrypted_book(PW);
+    std::fs::write(&path, &bytes).unwrap();
+
+    let mut s = s();
+    s.execute("file.open", json!({"path": path, "password": PW})).unwrap();
+    assert_eq!(s.doc().unwrap().path, None);
+    s.take_ui_requests();
+    s.execute("cell.set", json!({"cell": "A1", "input": "43"})).unwrap();
+    s.execute("file.save", json!({})).unwrap();
+    assert!(s.take_ui_requests().iter().any(|r| matches!(r, crate::UiRequest::Dialog(name, _) if name == "saveAs")));
+    assert_eq!(std::fs::read(&path).unwrap(), bytes, "the encrypted original is untouched");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+fn text_of(s: &Session, a: &str) -> String {
+    let d = s.doc().unwrap();
+    crate::display::cell_text(&d.wb, d.wb.active().unwrap(), CellRef::parse(a).unwrap())
+}
+
+#[test]
+fn app_region_sets_reports_and_rejects() {
+    let mut s = s();
+    // No params reports the current region and never changes it.
+    let r = s.execute("app.region", json!({})).unwrap();
+    assert_eq!(r["region"], "en-US");
+    assert_eq!(r["decimal"], ".");
+    assert_eq!(r["group"], ",");
+    assert_eq!(r["dateOrder"], "MDY");
+    assert_eq!(r["shortDate"], "m/d/yyyy");
+    assert!(r["available"].as_array().unwrap().iter().any(|t| t == "pt-BR"));
+    assert_eq!(s.prefs.region, "en-US");
+    // Setting returns the new region and stores it in the preferences.
+    let r = s.execute("app.region", json!({"region": "pt-BR"})).unwrap();
+    assert_eq!((r["region"].as_str(), r["decimal"].as_str(), r["dateOrder"].as_str()), (Some("pt-BR"), Some(","), Some("DMY")));
+    assert_eq!(s.prefs.region, "pt-BR");
+    assert_eq!(s.doc().unwrap().wb.region.tag, "pt-BR");
+    assert_eq!(s.execute("app.region", json!({})).unwrap()["region"], "pt-BR");
+    // Tags are matched like the system writes them; unknown regions are errors that keep the setting.
+    assert_eq!(s.execute("app.region", json!({"region": "de_de"})).unwrap()["region"], "de-DE");
+    for bad in [json!({"region": "xx-XX"}), json!({"region": ""}), json!({"region": "de"}), json!({"region": 7}), json!({"region": ["de-DE"]})] {
+        let e = s.execute("app.region", bad.clone()).unwrap_err().to_string();
+        assert!(e.contains("region"), "{bad}: {e}");
+        assert_eq!(s.prefs.region, "de-DE", "{bad}");
+    }
+    assert!(s.execute("app.region", json!({"region": "xx-XX"})).unwrap_err().to_string().contains("pt-BR"), "the error lists the regions");
+    // Programmatic calls never ask for a dialog.
+    assert!(s.ui_requests.is_empty());
+    // Without a workbook it only stores the preference.
+    let mut empty = Session::new();
+    assert_eq!(empty.execute("app.region", json!({"region": "fr-FR"})).unwrap()["region"], "fr-FR");
+    empty.new_workbook();
+    assert_eq!(empty.doc().unwrap().wb.region.tag, "fr-FR", "new documents get the preference");
+    // It is journaled (a recorded session replays with the same region) but is not an undo step.
+    assert!(s.journal.iter().any(|(id, p)| id == "app.region" && p["region"] == "pt-BR"));
+    assert!(s.doc().unwrap().undo.is_empty());
+}
+
+#[test]
+fn region_changes_how_typed_dates_are_read_and_shown_but_not_the_value() {
+    let mut s = s();
+    s.execute("app.region", json!({"region": "en-GB"})).unwrap();
+    s.execute("cell.set", json!({"cell": "A1", "input": "25/09/2026", "region": "en-GB"})).unwrap();
+    assert_eq!(v(&s, "A1"), Value::Number(46290.0));
+    assert_eq!(fmt_of(&s, "A1"), "m/d/yyyy", "the stored code stays canonical");
+    assert_eq!(text_of(&s, "A1"), "25/09/2026");
+    // A date and time are built-in format 22.
+    s.execute("cell.set", json!({"cell": "A2", "input": "25/09/2026 18:00", "region": "en-GB"})).unwrap();
+    assert_eq!(v(&s, "A2"), Value::Number(46290.75));
+    assert_eq!(text_of(&s, "A2"), "25/09/2026 18:00");
+    // The editor starts from what reads back in the region.
+    {
+        let d = s.doc().unwrap();
+        assert_eq!(crate::display::edit_text(&d.wb, d.wb.active().unwrap(), CellRef::parse("A1").unwrap()), "25/09/2026");
+    }
+    // Switching back displays the same values the en-US way.
+    s.execute("app.region", json!({"region": "en-US"})).unwrap();
+    assert_eq!(v(&s, "A1"), Value::Number(46290.0));
+    assert_eq!(text_of(&s, "A1"), "9/25/2026");
+    assert_eq!(text_of(&s, "A2"), "9/25/2026 18:00");
+    assert_eq!(s.doc().unwrap().undo.len(), 2, "switching the region adds no undo step");
+    s.execute("cell.set", json!({"cell": "A3", "input": "25/09/2026"})).unwrap();
+    assert_eq!(v(&s, "A3"), Value::from("25/09/2026"), "day first isn't a date in en-US");
+    s.execute("cell.set", json!({"cell": "A3", "input": "9/25/2026"})).unwrap();
+    assert_eq!(v(&s, "A3"), Value::Number(46290.0));
+}
+
+#[test]
+fn decimal_comma_regions_type_and_show_numbers() {
+    let mut s = s();
+    s.execute("app.region", json!({"region": "pt-BR"})).unwrap();
+    s.execute("cell.set", json!({"cell": "A1", "input": "1.234,56", "region": "pt-BR"})).unwrap();
+    assert_eq!(v(&s, "A1"), Value::Number(1234.56));
+    assert_eq!(text_of(&s, "A1"), "1.234,56");
+    s.execute("cell.set", json!({"cell": "A2", "input": "3,5", "region": "pt-BR"})).unwrap();
+    assert_eq!(v(&s, "A2"), Value::Number(3.5));
+    assert_eq!(text_of(&s, "A2"), "3,5", "General shows the region's decimal");
+    s.execute("cell.set", json!({"cell": "A3", "input": "R$ 10,50", "region": "pt-BR"})).unwrap();
+    assert_eq!(v(&s, "A3"), Value::Number(10.5));
+    assert_eq!(text_of(&s, "A3"), "R$ 10,50");
+    s.execute("cell.set", json!({"cell": "A4", "input": "12,5%", "region": "pt-BR"})).unwrap();
+    assert_eq!(text_of(&s, "A4"), "12,50%");
+    // The editor shows the number as it reads back in the region.
+    {
+        let d = s.doc().unwrap();
+        let sh = d.wb.active().unwrap();
+        assert_eq!(crate::display::edit_text(&d.wb, sh, CellRef::parse("A2").unwrap()), "3,5");
+        assert_eq!(crate::display::edit_text(&d.wb, sh, CellRef::parse("A1").unwrap()), "1234,56");
+    }
+    // A leading minus before a currency amount is a number, not a formula.
+    s.execute("cell.set", json!({"cell": "A5", "input": "-R$ 5", "region": "pt-BR"})).unwrap();
+    assert_eq!(v(&s, "A5"), Value::Number(-5.0));
+    // Formulas stay canonical; a constant inside one keeps the point.
+    s.execute("cell.set", json!({"cell": "B1", "input": "=A2*2", "region": "pt-BR"})).unwrap();
+    assert_eq!(v(&s, "B1"), Value::Number(7.0));
+    assert_eq!(text_of(&s, "B1"), "7");
+    // The same text in en-US stays text.
+    s.execute("app.region", json!({"region": "en-US"})).unwrap();
+    assert_eq!(text_of(&s, "A1"), "1,234.56");
+    s.execute("cell.set", json!({"cell": "C1", "input": "3,5"})).unwrap();
+    assert_eq!(v(&s, "C1"), Value::from("3,5"));
+}
+
+#[test]
+fn region_applies_to_every_document_new_documents_and_undo() {
+    let mut s = s();
+    s.new_workbook();
+    s.execute("cell.set", json!({"cell": "A1", "input": "9/25/2026"})).unwrap();
+    s.execute("app.region", json!({"region": "de-DE"})).unwrap();
+    assert!(s.documents().iter().all(|d| d.wb.region.tag == "de-DE"));
+    assert_eq!(text_of(&s, "A1"), "25.09.2026");
+    s.new_workbook();
+    assert_eq!(s.doc().unwrap().wb.region.tag, "de-DE");
+    // Undo brings back an older snapshot; it shows in the current region.
+    s.set_active(1);
+    s.execute("cell.set", json!({"cell": "A2", "input": "1,5", "region": "de-DE"})).unwrap();
+    s.execute("app.region", json!({"region": "ja-JP"})).unwrap();
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.doc().unwrap().wb.region.tag, "ja-JP");
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(s.doc().unwrap().wb.region.tag, "ja-JP");
+    assert_eq!(text_of(&s, "A1"), "2026/9/25");
+    // A saved workbook doesn't turn dirty because the region changed.
+    let mut c = Session::new();
+    c.new_workbook();
+    assert!(!c.doc().unwrap().is_dirty());
+    c.execute("app.region", json!({"region": "fr-FR"})).unwrap();
+    assert!(!c.doc().unwrap().is_dirty());
+    // The region isn't saved with the workbook and a file opens in the current one.
+    let json_bytes = serde_json::to_string(&*c.doc().unwrap().wb).unwrap();
+    assert!(!json_bytes.contains("fr-FR"));
+    let back: gridcraft_model::Workbook = serde_json::from_str(&json_bytes).unwrap();
+    assert_eq!(back.region.tag, "en-US");
+    c.add_document(crate::DocState::new(back, None, "Back".into()));
+    assert_eq!(c.doc().unwrap().wb.region.tag, "fr-FR");
+    // Preferences replaced from a file are applied explicitly.
+    c.prefs = serde_json::from_str(r#"{"region": "it-IT"}"#).unwrap();
+    c.apply_region();
+    assert!(c.documents().iter().all(|d| d.wb.region.tag == "it-IT"));
+    c.prefs = serde_json::from_str(r#"{"region": "nonsense"}"#).unwrap();
+    c.apply_region();
+    assert!(c.documents().iter().all(|d| d.wb.region.tag == "en-US"), "an unknown saved region reads as en-US");
+    assert_eq!(serde_json::from_str::<crate::Prefs>("{}").unwrap().region, "en-US", "prefs saved before regions existed");
+}
+
+#[test]
+fn data_validation_and_status_bar_follow_the_region() {
+    let mut s = s();
+    s.execute("app.region", json!({"region": "de-DE"})).unwrap();
+    s.execute("cell.set", json!({"cell": "A1", "input": "1.234,5", "region": "de-DE"})).unwrap();
+    s.execute("cell.set", json!({"cell": "A2", "input": "2,25", "region": "de-DE"})).unwrap();
+    s.execute("selection.set", json!({"range": "A1:A2"})).unwrap();
+    let d = s.doc().unwrap();
+    let st = crate::display::stats(d.wb.active().unwrap(), &d.selection.ranges);
+    assert_eq!(st.sum, 1236.75);
+    // The status bar formats its sum with General's wide code through display::format.
+    let shown = crate::display::format(&Value::Number(st.sum), "#,##0.##########", &d.wb).text;
+    assert_eq!(shown.trim_end_matches(','), "1.236,75");
+    // Typed input is checked as the region reads it.
+    s.execute("data.validation", json!({"range": "B1", "type": "decimal", "operator": "between", "formula1": "0", "formula2": "5"})).unwrap();
+    assert_eq!(s.execute("data.validate", json!({"cell": "B1", "input": "4,5", "region": "de-DE"})).unwrap()["ok"], true);
+    assert_eq!(s.execute("data.validate", json!({"cell": "B1", "input": "5,5", "region": "de-DE"})).unwrap()["ok"], false);
+    s.execute("app.region", json!({"region": "en-US"})).unwrap();
+    assert_eq!(s.execute("data.validate", json!({"cell": "B1", "input": "4,5"})).unwrap()["ok"], false, "4,5 isn't a number in en-US");
+}
+
+/// Text in command params is canonical (en-US) unless the call says it was typed in a region.
+#[test]
+fn commands_read_text_canonically_unless_given_the_region_it_was_typed_in() {
+    let mut s = s();
+    s.execute("app.region", json!({"region": "de-DE"})).unwrap();
+    // A JSON number is a value, not typed text: de-DE must not read its point as a group separator.
+    s.execute("cell.set", json!({"cell": "A1", "value": 1.234})).unwrap();
+    assert_eq!(v(&s, "A1"), Value::Number(1.234));
+    // Text without a region is canonical, whatever the preference is...
+    s.execute("cell.set", json!({"cell": "A2", "input": "1.234"})).unwrap();
+    assert_eq!(v(&s, "A2"), Value::Number(1.234));
+    s.execute("cell.set", json!({"cell": "A3", "input": "1,234"})).unwrap();
+    assert_eq!(v(&s, "A3"), Value::Number(1234.0), "en-US reads the comma as a group separator");
+    // ...and with a region it is read the way that region writes it.
+    s.execute("cell.set", json!({"cell": "A4", "input": "1.234", "region": "de-DE"})).unwrap();
+    assert_eq!(v(&s, "A4"), Value::Number(1234.0));
+    s.execute("cell.set", json!({"cell": "A5", "input": "1,234", "region": "de-DE"})).unwrap();
+    assert_eq!(v(&s, "A5"), Value::Number(1.234));
+    // A value (not text) stays a value even when a region is named.
+    s.execute("cell.set", json!({"cell": "A6", "value": 1.5, "region": "de-DE"})).unwrap();
+    assert_eq!(v(&s, "A6"), Value::Number(1.5));
+    // Headless: day-first text stays text after a region change unless the call names the region.
+    let mut h = self::s();
+    h.execute("app.region", json!({"region": "en-GB"})).unwrap();
+    h.execute("cell.set", json!({"cell": "A1", "input": "25/09/2026"})).unwrap();
+    assert_eq!(v(&h, "A1"), Value::from("25/09/2026"));
+    h.execute("cell.set", json!({"cell": "A1", "input": "25/09/2026", "region": "en-GB"})).unwrap();
+    assert_eq!(v(&h, "A1"), Value::Number(46290.0));
+    // range.fill, range.setValues and plain-text paste take the same parameter.
+    h.execute("range.fill", json!({"range": "B1:B2", "input": "25/09/2026", "region": "en-GB"})).unwrap();
+    assert_eq!((v(&h, "B1"), v(&h, "B2")), (Value::Number(46290.0), Value::Number(46290.0)));
+    h.execute("range.setValues", json!({"range": "C1", "values": [["25/09/2026"]]})).unwrap();
+    assert_eq!(v(&h, "C1"), Value::from("25/09/2026"));
+    h.execute("range.setValues", json!({"range": "C1", "values": [["25/09/2026"]], "region": "en-GB"})).unwrap();
+    assert_eq!(v(&h, "C1"), Value::Number(46290.0));
+    h.execute("edit.paste", json!({"at": "D1", "text": "25/09/2026\t1,5"})).unwrap();
+    assert_eq!((v(&h, "D1"), v(&h, "E1")), (Value::from("25/09/2026"), Value::from("1,5")));
+    h.execute("edit.paste", json!({"at": "D2", "text": "25/09/2026\t1,5", "region": "de-DE"})).unwrap();
+    assert_eq!(v(&h, "D2"), Value::Number(46290.0), "de-DE is day first too");
+    assert_eq!(v(&h, "E2"), Value::Number(1.5));
+    // A bad tag is an error naming the valid ones, and changes nothing.
+    for bad in [json!("xx"), json!(7), json!("")] {
+        let e = h.execute("cell.set", json!({"cell": "Z1", "input": "1", "region": bad.clone()})).unwrap_err().to_string();
+        assert!(e.contains("region"), "{bad}: {e}");
+    }
+    assert!(h.execute("cell.set", json!({"cell": "Z1", "input": "1", "region": "xx"})).unwrap_err().to_string().contains("en-GB"));
+    assert_eq!(v(&h, "Z1"), Value::Empty);
+    assert_eq!(h.execute("data.validate", json!({"cell": "Z1", "input": "1", "region": null})).unwrap()["ok"], true, "null is no region");
+}
+
+/// A script means the same thing whatever the session's region is when it runs.
+#[test]
+fn recorded_scripts_and_the_journal_replay_independently_of_the_current_region() {
+    let mut s = s();
+    s.execute("app.region", json!({"region": "de-DE"})).unwrap();
+    s.execute("automate.recordActions", json!({})).unwrap();
+    s.execute("cell.set", json!({"cell": "A1", "input": "1.234", "region": "de-DE"})).unwrap();
+    s.execute("cell.set", json!({"cell": "A2", "input": "1.234"})).unwrap();
+    s.execute("automate.recordActions", json!({"stop": true, "name": "Typed"})).unwrap();
+    assert_eq!((v(&s, "A1"), v(&s, "A2")), (Value::Number(1234.0), Value::Number(1.234)));
+    s.execute("app.region", json!({"region": "en-US"})).unwrap();
+    s.execute("edit.clearAll", json!({"range": "A1:A2"})).unwrap();
+    s.execute("automate.runScript", json!({"name": "Typed"})).unwrap();
+    assert_eq!((v(&s, "A1"), v(&s, "A2")), (Value::Number(1234.0), Value::Number(1.234)), "same result in en-US");
+    // Replaying the journal in a fresh session gives the same cells.
+    let mut r = self::s();
+    for (id, p) in s.journal.iter().filter(|(id, _)| id == "cell.set") {
+        r.execute(id, p.clone()).unwrap();
+    }
+    assert_eq!((v(&r, "A1"), v(&r, "A2")), (Value::Number(1234.0), Value::Number(1.234)));
+}
+
+#[test]
+fn canonical_producers_stay_canonical_in_a_decimal_comma_region() {
+    let mut s = s();
+    s.execute("app.region", json!({"region": "de-DE"})).unwrap();
+    // Replace builds its candidates from the stored (canonical) text.
+    s.execute("cell.set", json!({"cell": "A1", "value": 1.234})).unwrap();
+    s.execute("edit.replace", json!({"what": "1", "with": "2", "matchCase": true, "all": true})).unwrap();
+    assert_eq!(v(&s, "A1"), Value::Number(2.234));
+    // Restoring a scenario writes the values it captured.
+    s.execute("data.scenarioAdd", json!({"name": "S", "changing": "A1"})).unwrap();
+    s.execute("cell.set", json!({"cell": "A1", "value": 9})).unwrap();
+    s.execute("data.scenarioShow", json!({"name": "S"})).unwrap();
+    assert_eq!(v(&s, "A1"), Value::Number(2.234));
+    // Circle Invalid Data agrees with validating the same number typed in the region.
+    s.execute("data.validation", json!({"range": "A1", "type": "decimal", "operator": "between", "formula1": "0", "formula2": "3"})).unwrap();
+    assert_eq!(s.execute("data.validate", json!({"cell": "A1", "input": "2,234", "region": "de-DE"})).unwrap()["ok"], true);
+    assert_eq!(s.execute("data.circleInvalid", json!({})).unwrap()["invalid"], json!([]));
+    s.execute("cell.set", json!({"cell": "A1", "value": 7.5})).unwrap();
+    assert_eq!(s.execute("data.validate", json!({"cell": "A1", "input": "7,5", "region": "de-DE"})).unwrap()["ok"], false);
+    assert_eq!(s.execute("data.circleInvalid", json!({})).unwrap()["invalid"], json!(["A1"]));
+}
+
+#[test]
+fn csv_files_stay_en_us_whatever_the_region() {
+    let reopen = |wb: &gridcraft_model::Workbook, name: &str| crate::io::open_bytes(name, &crate::io::save_bytes(wb, name).unwrap()).unwrap().0;
+    let mut s = s();
+    s.execute("app.region", json!({"region": "de-DE"})).unwrap();
+    s.execute("cell.set", json!({"cell": "A1", "value": 1000})).unwrap();
+    s.execute("home.numberFormat", json!({"range": "A1", "code": "#,##0"})).unwrap();
+    s.execute("cell.set", json!({"cell": "B1", "value": 1.5})).unwrap();
+    s.execute("cell.set", json!({"cell": "C1", "value": 46290})).unwrap();
+    s.execute("home.numberFormat", json!({"range": "C1", "code": "m/d/yyyy"})).unwrap();
+    let wb = s.doc().unwrap().wb.clone();
+    let bytes = crate::io::save_bytes(&wb, "book.csv").unwrap();
+    assert_eq!(String::from_utf8(bytes).unwrap(), "\"1,000\",1.5,9/25/2026\r\n");
+    let back = reopen(&wb, "book.csv");
+    let sh = back.active().unwrap();
+    assert_eq!(sh.value(CellRef::parse("A1").unwrap()), Value::Number(1000.0));
+    assert_eq!(sh.value(CellRef::parse("B1").unwrap()), Value::Number(1.5));
+    assert_eq!(sh.value(CellRef::parse("C1").unwrap()), Value::Number(46290.0));
+    // The same in a day-first region; the screen keeps showing the region's way.
+    s.execute("app.region", json!({"region": "en-GB"})).unwrap();
+    assert_eq!(text_of(&s, "C1"), "25/09/2026");
+    let wb = s.doc().unwrap().wb.clone();
+    assert!(String::from_utf8(crate::io::save_bytes(&wb, "book.csv").unwrap()).unwrap().ends_with("9/25/2026\r\n"));
+    assert_eq!(reopen(&wb, "book.csv").active().unwrap().value(CellRef::parse("C1").unwrap()), Value::Number(46290.0));
+    // The clipboard text and HTML are what the screen shows (Excel copies the displayed text).
+    let d = s.doc().unwrap();
+    assert!(crate::display::range_text(&d.wb, 0, gridcraft_core::RangeRef::parse("C1").unwrap()).starts_with("25/09/2026"));
+}
+
+#[test]
+fn get_data_from_a_range_keeps_the_numbers_in_a_decimal_comma_region() {
+    let mut s = s();
+    s.execute("app.region", json!({"region": "de-DE"})).unwrap();
+    s.execute("range.setValues", json!({"range": "A1", "values": [["n", "d"], [1234.5, 46290]]})).unwrap();
+    s.execute("home.numberFormat", json!({"range": "A2", "code": "#,##0.00"})).unwrap();
+    s.execute("home.numberFormat", json!({"range": "B2", "code": "m/d/yyyy"})).unwrap();
+    assert_eq!(text_of(&s, "A2"), "1.234,50");
+    s.execute("data.fromTableRange", json!({"range": "A1:B2"})).unwrap();
+    assert_eq!(s.doc().unwrap().wb.sheets.len(), 2);
+    assert_eq!(v(&s, "A2"), Value::Number(1234.5));
+    assert_eq!(v(&s, "B2"), Value::Number(46290.0));
+}
+
+/// F2 then Enter must keep the value, also where the editor falls back to the raw number.
+#[test]
+fn edit_text_falls_back_to_the_region_decimal_in_date_formats() {
+    let mut s = s();
+    s.execute("app.region", json!({"region": "de-DE"})).unwrap();
+    // A negative number is no date.
+    s.execute("cell.set", json!({"cell": "A1", "value": -1.234})).unwrap();
+    s.execute("home.numberFormat", json!({"range": "A1", "code": "m/d/yyyy"})).unwrap();
+    // A time with fractions of a second doesn't read back from `hh:mm:ss`.
+    s.execute("cell.set", json!({"cell": "A2", "value": 46290.123456789})).unwrap();
+    s.execute("home.numberFormat", json!({"range": "A2", "code": "m/d/yyyy"})).unwrap();
+    let edit = |s: &Session, a: &str| {
+        let d = s.doc().unwrap();
+        crate::display::edit_text(&d.wb, d.wb.active().unwrap(), CellRef::parse(a).unwrap())
+    };
+    assert_eq!(edit(&s, "A1"), "-1,234");
+    assert_eq!(edit(&s, "A2"), "46290,123456789");
+    for (a, want) in [("A1", -1.234), ("A2", 46290.123456789)] {
+        let text = edit(&s, a);
+        s.execute("cell.set", json!({"cell": a, "input": text, "region": "de-DE"})).unwrap();
+        assert_eq!(v(&s, a), Value::Number(want), "{a}");
+    }
 }

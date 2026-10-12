@@ -13,23 +13,19 @@ use crate::cmd::Ctx;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FillMode {
     Series,
+    /// The Ctrl+drag fill: the opposite of a plain drag. A lone number fills a
+    /// series stepping by 1; anything a plain drag would extend is copied.
+    Alternate,
     Copy,
     Formats,
     ValuesOnly,
 }
 
 /// Built-in custom lists.
-fn lists(reg: &gridcraft_locale::Regional) -> Vec<Vec<String>> {
+fn lists() -> Vec<Vec<String>> {
     let short_days: Vec<String> = WEEKDAYS.iter().map(|d| d.get(..3).unwrap_or(d).to_string()).collect();
     let short_months: Vec<String> = MONTHS.iter().map(|m| m.get(..3).unwrap_or(m).to_string()).collect();
-    let own = |names: &[&str]| names.iter().map(|s| s.to_string()).collect::<Vec<String>>();
-    // The region's own lists come first (so `mar` resolves in the region's language);
-    // the English lists stay recognised everywhere.
     vec![
-        own(&reg.weekdays_abbr),
-        own(&reg.weekdays),
-        own(&reg.months_abbr),
-        own(&reg.months),
         short_days,
         WEEKDAYS.iter().map(|s| s.to_string()).collect(),
         short_months,
@@ -69,14 +65,14 @@ pub fn fill(cx: &mut Ctx, sheet: usize, src: RangeRef, target: RangeRef, mode: F
                 if forward { (src.end.col + 1..=target.end.col).collect() } else { (target.start.col..src.start.col).rev().collect() };
             cols.into_iter().map(|c| CellRef::new(lane, c)).collect()
         };
-        let pattern = if mode == FillMode::Series {
-            Pattern::detect(
+        let pattern = if matches!(mode, FillMode::Series | FillMode::Alternate) {
+            let detected = Pattern::detect(
                 &src_cells,
                 &custom,
-                &cx.wb.locale.regional,
                 cx.wb.date_system,
                 cx.wb.styles.get(src_cells.first().and_then(|c| c.1.as_ref()).map(|c| c.style).unwrap_or_default()).num_fmt.as_str(),
-            )
+            );
+            if mode == FillMode::Alternate { detected.alternate(&src_cells) } else { detected }
         } else {
             Pattern::Copy
         };
@@ -92,7 +88,7 @@ pub fn fill(cx: &mut Ctx, sheet: usize, src: RangeRef, target: RangeRef, mode: F
                     writes.push((*t, Some(existing)));
                     continue;
                 }
-                FillMode::ValuesOnly | FillMode::Series | FillMode::Copy => {
+                FillMode::ValuesOnly | FillMode::Series | FillMode::Alternate | FillMode::Copy => {
                     let style = if mode == FillMode::ValuesOnly { sh.cell(*t).map(|c| c.style).unwrap_or_default() } else { cell.style };
                     if let Some(f) = &cell.formula {
                         if let Some(e) = f.expr() {
@@ -165,13 +161,7 @@ enum Pattern {
 }
 
 impl Pattern {
-    fn detect(
-        cells: &[(CellRef, Option<Cell>)],
-        custom: &[Vec<String>],
-        reg: &gridcraft_locale::Regional,
-        sys: gridcraft_core::DateSystem,
-        fmt: &str,
-    ) -> Pattern {
+    fn detect(cells: &[(CellRef, Option<Cell>)], custom: &[Vec<String>], sys: gridcraft_core::DateSystem, fmt: &str) -> Pattern {
         let vals: Vec<Value> = cells.iter().map(|(_, c)| c.as_ref().map(|c| c.value.clone()).unwrap_or_default()).collect();
         if cells.iter().any(|(_, c)| c.as_ref().is_some_and(|c| c.formula.is_some())) {
             return Pattern::Copy;
@@ -216,9 +206,9 @@ impl Pattern {
         // Text.
         if !vals.is_empty() && vals.iter().all(|v| v.is_text()) {
             let texts: Vec<String> = vals.iter().filter_map(|v| v.as_text().map(str::to_string)).collect();
-            let all_lists: Vec<Vec<String>> = custom.iter().cloned().chain(lists(reg)).collect();
+            let all_lists: Vec<Vec<String>> = custom.iter().cloned().chain(lists()).collect();
             for list in &all_lists {
-                let idx: Vec<Option<usize>> = texts.iter().map(|t| list.iter().position(|l| l.to_lowercase() == t.to_lowercase())).collect();
+                let idx: Vec<Option<usize>> = texts.iter().map(|t| list.iter().position(|l| l.eq_ignore_ascii_case(t))).collect();
                 if idx.iter().all(Option::is_some) {
                     let idx: Vec<usize> = idx.into_iter().flatten().collect();
                     let first = idx.first().copied().unwrap_or(0);
@@ -243,6 +233,19 @@ impl Pattern {
             }
         }
         Pattern::Copy
+    }
+
+    /// The pattern of a Ctrl+drag, which swaps copying and extending: a single
+    /// number (which a plain drag copies) counts up by 1, and every series a
+    /// plain drag would extend (numbers, dates, lists, `Item 1`) is copied.
+    fn alternate(self, cells: &[(CellRef, Option<Cell>)]) -> Pattern {
+        match (self, cells) {
+            (Pattern::Copy, [(_, Some(cell))]) if cell.formula.is_none() => match cell.value.as_f64() {
+                Some(n) if cell.value.is_number() => Pattern::Linear { last: n, first: n, step: 1.0 },
+                _ => Pattern::Copy,
+            },
+            _ => Pattern::Copy,
+        }
     }
 
     /// The value `k` steps beyond the source (forward) or before it (backward).
