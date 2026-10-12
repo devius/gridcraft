@@ -13,6 +13,7 @@ mod cs;
 mod de;
 mod es;
 mod fr;
+mod ka;
 mod ko;
 mod pt;
 mod ru;
@@ -127,8 +128,7 @@ impl Language {
             Self::De => de::translate(text),
             Self::Cs => cs::translate(text),
             Self::Fr => fr::translate(text),
-            // The Georgian table lands with the catalog (branch ka-catalog); until then English.
-            Self::Ka => None,
+            Self::Ka => ka::translate(text),
         };
         translated.unwrap_or_else(|| text.rsplit_once('|').map_or(text, |(_, label)| label))
     }
@@ -604,6 +604,7 @@ mod tests {
             assert!(de::translate(english).is_some_and(|text| !text.is_empty()), "missing German: {english}");
             assert!(cs::translate(english).is_some_and(|text| !text.is_empty()), "missing Czech: {english}");
             assert!(fr::translate(english).is_some_and(|text| !text.is_empty()), "missing French: {english}");
+            assert!(ka::translate(english).is_some_and(|text| !text.is_empty()), "missing Georgian: {english}");
         }
         assert_eq!(Language::Ja.tr("Data"), "データ");
         assert_eq!(Language::Zh.tr("Data"), "数据");
@@ -617,6 +618,8 @@ mod tests {
         assert_eq!(Language::De.tr("Sheet1!A1"), "Sheet1!A1");
         assert_eq!(Language::Fr.tr("Data"), "Données");
         assert_eq!(Language::Fr.tr("Sheet1!A1"), "Sheet1!A1");
+        assert_eq!(Language::Ka.tr("Data"), "მონაცემები");
+        assert_eq!(Language::Ka.tr("Sheet1!A1"), "Sheet1!A1");
         assert_eq!(Language::PtBr.tr("Date"), "Data");
         assert_eq!(Language::PtBr.tr("Sheet1!A1"), "Sheet1!A1");
         assert_eq!(Language::Ja.tr("Sheet1!A1"), "Sheet1!A1");

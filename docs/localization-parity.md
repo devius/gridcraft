@@ -1,6 +1,6 @@
 # Localization parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-11 · **Change:** minor (regional formats added) · **Target:** Microsoft Excel (Microsoft 365), Excel for Mac 16.113.4
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-13 · **Change:** minor (Georgian ka interface table and ka-GE region) · **Target:** Microsoft Excel (Microsoft 365), Excel for Mac 16.113.4
 
 Per-language status against Excel, which ships its UI in dozens of languages (Windows language
 packs cover 100+), with localized function names, argument separators, number and date formats,
@@ -82,9 +82,13 @@ separators, number/date formats, machine translation with agent review, and scri
 | Japanese | ja | 268 (~12%) | no | CJK system-font fallback; IME unverified; no furigana display | no | menus only | 8–12 h |
 | German | de | 266 (~12%) | no | Latin: yes | no | menus only | 4–8 h |
 | Korean | ko | 266 (~12%) | no | Hangul via the CJK fallback; IME unverified | no | menus only | 6–10 h |
+| Georgian | ka (ka-GE) | 382 (~17%: ribbon and Backstage) | no | Mkhedruli via system fonts (Sylfaen, SF Georgian, Noto Sans Georgian); PDF can't export | yes | menus only; ka-GE regional format; English function names | 8–12 h |
 | Vietnamese | vi | 0 (0%) | no | Latin with stacked diacritics: unverified | no | none | 6–10 h |
 
 Other shipped languages: Russian (ru) and German (de), 266 labels each (~12%), menus only.
+Georgian (ka) covers every key in `i18n.rs` (382, ribbon and Backstage) and has the ka-GE region
+(decimal comma, `dd.mm.yyyy`, Georgian month names, ₾); notes and terminology in
+[localization-ka.md](localization-ka.md).
 
 **Total:** catalog work 10–20 h + languages 92–144 h ≈ **100–165 h**. Parallelizes almost fully
 once the catalog covers dialogs and commands. **Needs a human:** native-speaker review of every
@@ -106,6 +110,7 @@ language (none so far) and of localized function names.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-13 | minor | Georgian (ka): `i18n/ka.rs` covers all 382 interface keys, native-speaker terminology; ka-GE region (16 regions) |
 | 2026-10-11 | minor | Regional formats: typing and showing numbers, dates and times by region (`app.region`, 15 regions, Backstage Options combo) |
 | 2026-10-11 | minor | German ribbon catalog (`i18n/de.rs`, 266 labels, ~12%); `de` locale tags (de-DE, de-AT, de-CH…) resolve to German. PR #163 (localized German formulas/numbers) still open |
 | 2026-10-11 | minor | Sheet Right-to-Left mirrors the grid (#146) |

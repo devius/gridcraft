@@ -94,7 +94,7 @@ and German (266–268 labels each, ~12% of ~2,200 strings; merged 10-10 in #31, 
 added 10-11), the
 interface follows the system language, and CJK, Thai and Hebrew text falls back to system fonts
 (#38). Dialogs, menus and messages are English; formulas are en-US (plus Spanish). Numbers, dates
-and times follow a Regional format setting (15 regions; File › Options, `app.region`).
+and times follow a Regional format setting (16 regions; File › Options, `app.region`).
 Localized German formulas and numbers are in PR #163. Detail: [localization-parity.md](docs/localization-parity.md).
 
 | Language | Code | Status | UI strings |
@@ -110,6 +110,7 @@ Localized German formulas and numbers are in PR #163. Detail: [localization-pari
 | Japanese | ja | menus only | ~12% |
 | German | de | menus only | ~12% |
 | Korean | ko | menus only | ~12% |
+| Georgian | ka | ribbon and Backstage (all 382 table labels), ka-GE regional format | ~17% |
 | Vietnamese | vi | none | 0% |
 
 Other shipped languages: 2 (Russian and German, menus only, ~12%).
@@ -133,6 +134,7 @@ Ranked; estimates in Opus 5.5 agent-hours. Detail and the full beta-gate list in
 
 | Date | What landed |
 |---|---|
+| 2026-10-13 | Georgian (ka, fork): ribbon and Backstage in Georgian (all 382 interface-table labels, native-speaker terminology), ka-GE regional format (decimal comma, `dd.mm.yyyy`, Georgian months, ₾), Georgian font fallback |
 | 2026-10-12 | File › Print selects a system printer, copies, duplex and grayscale, submits PDF jobs through craft-print on a worker and shows spooler errors; browser printing and PDF export remain available |
 | 2026-10-11 | Command-sequence fuzzing: random command sequences checked against undo/redo, XLSX round-trip and full recalculation; fixes for the table, legacy-array, spill, AutoSum, Watch Window and sheet-copy bugs it found |
 | 2026-10-11 | Password-protected workbooks open: GridCraft asks for the password and decrypts Agile and Standard encryption (#11) |
