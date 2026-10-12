@@ -69,7 +69,7 @@ how they are typed and displayed, so switching back shows the same dates in the 
 Formula syntax (function names, argument separators) is not part of the region. `region` is a tag
 from the list below, matched strictly (an unknown tag is an error that lists the valid ones):
 `en-US` (default), `en-GB`, `en-IN`, `es-ES`, `de-DE`, `fr-FR`, `it-IT`, `pt-BR`, `pt-PT`,
-`ru-RU`, `cs-CZ`, `ja-JP`, `ko-KR`, `zh-CN`, `zh-TW`. Without `region` the command only reports
+`ru-RU`, `cs-CZ`, `ka-GE`, `ja-JP`, `ko-KR`, `zh-CN`, `zh-TW`. Without `region` the command only reports
 the current one: `{region, name, decimal, group, dateOrder, shortDate, longDate, available}`. The
 region is a session preference, applied to every open and new workbook and saved in `prefs.json`;
 the desktop app starts from the system region on first run, the web app from

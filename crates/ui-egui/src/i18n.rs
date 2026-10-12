@@ -37,8 +37,7 @@ pub enum Language {
 }
 
 impl Language {
-    pub const ALL: [Self; 11] =
-        [Self::En, Self::Es, Self::Zh, Self::Ja, Self::Ko, Self::Ru, Self::PtBr, Self::De, Self::Cs, Self::Fr, Self::Ka];
+    pub const ALL: [Self; 11] = [Self::En, Self::Es, Self::Zh, Self::Ja, Self::Ko, Self::Ru, Self::PtBr, Self::De, Self::Cs, Self::Fr, Self::Ka];
 
     /// The language's own name, shown in the switcher.
     pub fn name(self) -> &'static str {

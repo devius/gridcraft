@@ -644,6 +644,8 @@ fn month_and_day_names_and_am_pm_in_the_region() {
     assert_eq!(fin("ru-RU", "d mmmm yyyy", 46290.0), "25 сентября 2026");
     assert_eq!(fin("cs-CZ", "d. mmmm yyyy", 46290.0), "25. září 2026");
     assert_eq!(fin("cs-CZ", "mmmm", 46250.0), "srpen");
+    assert_eq!(fin("ka-GE", "d mmmm yyyy", 46290.0), "25 სექტემბერი 2026");
+    assert_eq!(fin("ka-GE", "m/d/yyyy", 46290.0), "25.09.2026");
     assert_eq!(fin("en-US", "h:mm AM/PM", 46290.75), "6:00 PM");
     assert_eq!(fin("ja-JP", "h:mm AM/PM", 46290.75), "6:00 午後");
     assert_eq!(fin("ko-KR", "h:mm AM/PM", 46290.25), "6:00 오전");

@@ -40,9 +40,9 @@ right-to-left sheets and full complex-script support. Part of
 File › Options › Regional format (command `app.region`, [control-protocol.md](control-protocol.md))
 selects the region, independently of the interface language, as Excel's Region setting does. It
 is a session preference saved with the others; the desktop app starts from the system region, the
-web app from `navigator.language`, and headless sessions from en-US. 15 regions are built in
+web app from `navigator.language`, and headless sessions from en-US. 16 regions are built in
 (`crates/core/src/region.rs`, data from CLDR): en-US, en-GB, en-IN, es-ES, de-DE, fr-FR, it-IT,
-pt-BR, pt-PT, ru-RU, cs-CZ, ja-JP, ko-KR, zh-CN, zh-TW. Other system regions fall back to their
+pt-BR, pt-PT, ru-RU, cs-CZ, ka-GE, ja-JP, ko-KR, zh-CN, zh-TW. Other system regions fall back to their
 language's main region.
 
 - **Typing:** decimal and group separators, Indian grouping, currency symbols, percent, dates in
