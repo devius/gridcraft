@@ -21,9 +21,9 @@ menu-edit-delete = წაშლა…
 
 ## View
 
-menu-view-formula-bar = ფორმულის ზოლი
+menu-view-formula-bar = ფორმულათა ზოლი
 menu-view-display-theme = ინტერფეისის თემა
-menu-theme-system = სისტემური
+menu-theme-system = სისტემა
 menu-theme-light = ღია
 menu-theme-dark = ბნელი
 menu-view-collapse-ribbon = ლენტის ჩაკეცვა
