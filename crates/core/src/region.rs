@@ -380,6 +380,32 @@ static CS_CZ: Region = Region {
     currency_format_int: "#,##0 \"Kč\"",
 };
 
+static KA_GE: Region = Region {
+    tag: "ka-GE",
+    name: "ქართული (საქართველო)",
+    lcid: 0x0437,
+    decimal: ',',
+    group: '\u{a0}',
+    grouping: Grouping::Thousands,
+    date_order: DateOrder::Dmy,
+    date_sep: '.',
+    time_sep: ':',
+    short_date: "dd.mm.yyyy",
+    long_date: "dddd, d mmmm, yyyy",
+    short_time: "hh:mm",
+    long_time: "hh:mm:ss",
+    datetime: "dd.mm.yyyy hh:mm",
+    months: ["იანვარი", "თებერვალი", "მარტი", "აპრილი", "მაისი", "ივნისი", "ივლისი", "აგვისტო", "სექტემბერი", "ოქტომბერი", "ნოემბერი", "დეკემბერი"],
+    months_abbr: ["იან", "თებ", "მარ", "აპრ", "მაი", "ივნ", "ივლ", "აგვ", "სექ", "ოქტ", "ნოე", "დეკ"],
+    months_genitive: None,
+    weekdays: ["კვირა", "ორშაბათი", "სამშაბათი", "ოთხშაბათი", "ხუთშაბათი", "პარასკევი", "შაბათი"],
+    weekdays_abbr: ["კვი", "ორშ", "სამ", "ოთხ", "ხუთ", "პარ", "შაბ"],
+    am_pm: AM_PM,
+    currency: "₾",
+    currency_format: "#,##0.00\u{a0}\"₾\"",
+    currency_format_int: "#,##0\u{a0}\"₾\"",
+};
+
 static JA_JP: Region = Region {
     tag: "ja-JP",
     name: "日本語 (日本)",
@@ -484,7 +510,8 @@ static ZH_TW: Region = Region {
     currency_format_int: "\"NT$\"#,##0",
 };
 
-static ALL: [&Region; 15] = [&EN_US, &EN_GB, &EN_IN, &ES_ES, &DE_DE, &FR_FR, &IT_IT, &PT_BR, &PT_PT, &RU_RU, &CS_CZ, &JA_JP, &KO_KR, &ZH_CN, &ZH_TW];
+static ALL: [&Region; 16] =
+    [&EN_US, &EN_GB, &EN_IN, &ES_ES, &DE_DE, &FR_FR, &IT_IT, &PT_BR, &PT_PT, &RU_RU, &CS_CZ, &KA_GE, &JA_JP, &KO_KR, &ZH_CN, &ZH_TW];
 
 /// Every region, English (United States) first.
 pub fn all() -> &'static [&'static Region] {
@@ -549,6 +576,7 @@ pub fn lookup(tag: &str) -> &'static Region {
         "it" => "it-IT",
         "ru" => "ru-RU",
         "cs" => "cs-CZ",
+        "ka" => "ka-GE",
         "ja" => "ja-JP",
         "ko" => "ko-KR",
         _ => "en-US",
@@ -636,6 +664,8 @@ mod tests {
         assert_eq!(lookup("zh-HK").tag, "zh-TW");
         assert_eq!(lookup("zh").tag, "zh-CN");
         assert_eq!(lookup("cs_CZ.UTF-8").tag, "cs-CZ");
+        assert_eq!(lookup("ka").tag, "ka-GE");
+        assert_eq!(lookup("ka_GE.UTF-8").tag, "ka-GE");
         assert_eq!(lookup("C").tag, "en-US");
         assert_eq!(lookup("").tag, "en-US");
         assert_eq!(lookup("xx-YY").tag, "en-US");
@@ -669,6 +699,9 @@ mod tests {
         let ru = find("ru-RU").unwrap();
         assert_eq!(ru.month_from_name("сентября"), Some(9));
         assert_eq!(ru.month_from_name("сент."), Some(9));
+        let ka = find("ka-GE").unwrap();
+        assert_eq!(ka.month_from_name("მარტი"), Some(3));
+        assert_eq!(ka.month_from_name("ოქტ"), Some(10));
         assert_eq!(EN_US.month_from_name("Ma"), None);
         assert_eq!(EN_US.month_from_name("May"), Some(5));
     }

@@ -549,6 +549,7 @@ mod tests {
         assert_eq!(pin("pt-BR", "$3").value, Value::text("$3"));
         assert_eq!(pin("en-GB", "£1,200.50").value, Value::Number(1200.5));
         assert_eq!(pin("cs-CZ", "99\u{a0}Kč").value, Value::Number(99.0));
+        assert_eq!(pin("ka-GE", "1\u{a0}234,5\u{a0}₾").value, Value::Number(1234.5));
         assert_eq!(pin("ja-JP", "¥1,000").value, Value::Number(1000.0));
     }
 
@@ -561,6 +562,7 @@ mod tests {
         assert_eq!(d("pt-BR", "25/09/2026"), Value::Number(46290.0));
         assert_eq!(d("ru-RU", "25.09.2026"), Value::Number(46290.0));
         assert_eq!(d("cs-CZ", "25. 9. 2026"), Value::Number(46290.0));
+        assert_eq!(d("ka-GE", "25.09.2026"), Value::Number(46290.0));
         assert_eq!(d("ja-JP", "2026/9/25"), Value::Number(46290.0));
         assert_eq!(d("ko-KR", "2026-09-25"), Value::Number(46290.0));
         assert_eq!(d("zh-TW", "2026/09/25"), Value::Number(46290.0));
