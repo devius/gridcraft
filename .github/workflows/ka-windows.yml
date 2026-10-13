@@ -1,10 +1,10 @@
 # Preview build for testers (fork only, not for upstream): the Windows x64 MSI from the
-# ka-preview branch, unsigned. Steps and pins follow the windows job of upstream's release workflow
+# ka branch, unsigned. Steps and pins follow the windows job of upstream's release workflow
 # (storytold/craft-common-actions .github/workflows/release.yml, which release.yml calls).
 name: Windows preview
 on:
   push:
-    branches: [ka-preview]
+    branches: [ka]
   workflow_dispatch:
 permissions:
   contents: read
