@@ -53,8 +53,8 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Accounting Number Format" => "საბუღალტრო რიცხვის ფორმატი",
         "Percent Style" => "პროცენტული სტილი",
         "Comma Style" => "გამყოფიანი სტილი",
-        "Increase Decimal" => "მძიმის შემდეგ ათწილადის გაზრდა",
-        "Decrease Decimal" => "მძიმის შემდეგ ათწილადის შემცირება",
+        "Increase Decimal" => "მძიმის შემდეგ ციფრების გაზრდა",
+        "Decrease Decimal" => "მძიმის შემდეგ ციფრების შემცირება",
         "More Accounting Formats…" => "სხვა საბუღალტრო ფორმატები…",
         "Conditional\nFormatting" => "პირობითი\nფორმატირება",
         "Conditional Formatting" => "პირობითი ფორმატირება",
@@ -123,7 +123,7 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Ink to\nShape" => "მელნიდან\nფიგურა",
         "Select\nObjects" => "ობიექტების\nმონიშვნა",
         "Themes" => "თემები",
-        "Margins" => "არშიები",
+        "Margins" => "ველები",
         "Size" => "ზომა",
         "Print\nArea" => "ბეჭდვის\nარე",
         "Set Print Area" => "ბეჭდვის არის დაყენება",
@@ -139,7 +139,7 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Normal" => "ჩვეულებრივი",
         "Portrait" => "ვერტიკალური",
         "Landscape" => "ჰორიზონტალური",
-        "Custom Margins…" => "საკუთარი არშიები…",
+        "Custom Margins…" => "საკუთარი ველები…",
         "Insert\nFunction" => "ფუნქციის\nჩასმა",
         "Name\nManager" => "სახელების\nმართვა",
         "Define Name" => "სახელის განსაზღვრა",
@@ -269,7 +269,7 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Formulas" => "ფორმულები",
         "Data" => "მონაცემები",
         "Review" => "განხილვა",
-        "View" => "ჩვენება",
+        "View" => "ხედი",
         "Automate" => "ავტომატიზაცია",
         "Table Design" => "ცხრილის დიზაინი",
         "Chart Design" => "დიაგრამის დიზაინი",
@@ -300,7 +300,7 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Lookup &\nReference" => "ძებნა და\nცნობარები",
         "Math &\nTrig" => "მათემატიკა და\nტრიგონომეტრია",
         "More\nFunctions" => "სხვა\nფუნქციები",
-        "Sheet Options|View" => "ჩვენება",
+        "Sheet Options|View" => "ხედი",
         "Print" => "დაბეჭდვა",
         "Click to add data" => "დაწკაპეთ მონაცემების დასამატებლად",
         "Add header" => "ზედა კოლონტიტულის დამატება",
@@ -349,10 +349,10 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Sheets" => "ფურცლები",
         "Protect Workbook" => "სამუშაო წიგნის დაცვა",
         "Sheet structure is locked: sheets can't be added, moved, renamed or deleted." => {
-            "ფურცლების სტრუქტურა ჩაკეტილია: ფურცლების დამატება, გადატანა, გადარქმევა და წაშლა შეუძლებელია."
+            "ფურცლების სტრუქტურა ჩაკეტილია: ფურცლების დამატება, გადატანა, სახელის შეცვლა და წაშლა შეუძლებელია."
         }
         "Lock the sheet structure so sheets can't be added, moved, renamed or deleted." => {
-            "ფურცლების სტრუქტურის ჩაკეტვა, რომ ფურცლების დამატება, გადატანა, გადარქმევა და წაშლა შეუძლებელი იყოს."
+            "ფურცლების სტრუქტურის ჩაკეტვა, რომ ფურცლების დამატება, გადატანა, სახელის შეცვლა და წაშლა შეუძლებელი იყოს."
         }
         "Properties" => "თვისებები",
         "Title" => "დასახელება",
@@ -374,7 +374,7 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Save the workbook under another name or in another folder." => "სამუშაო წიგნის შენახვა სხვა სახელით ან სხვა საქაღალდეში.",
         "Print Active Sheets" => "აქტიური ფურცლების დაბეჭდვა",
         "Print Entire Workbook" => "მთელი სამუშაო წიგნის დაბეჭდვა",
-        "Fit Sheet on One Page" => "ფურცლის ერთ გვერდზე მოთავსება",
+        "Fit Sheet on One Page" => "ფურცლის ერთ გვერდში ჩატევა",
         "Page Setup…" => "გვერდის პარამეტრები…",
         "Page {page} of {pages}" => "გვერდი {page} / {pages}",
         "Nothing to print." => "დასაბეჭდი არაფერია.",
