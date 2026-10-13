@@ -335,7 +335,7 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Open" => "გახსნა",
         "Info" => "ინფორმაცია",
         "Save" => "შენახვა",
-        "Save As" => "შენახვა სხვა სახელით",
+        "Save As" => "შენახვა როგორც",
         "Export" => "ექსპორტი",
         "Close" => "დახურვა",
         "Options" => "პარამეტრები",
