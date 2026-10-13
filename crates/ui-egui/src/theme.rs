@@ -470,8 +470,32 @@ fn load_fallback(fonts: &mut FontDefinitions, han: HanOrder) -> Vec<String> {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn load_fallback(_fonts: &mut FontDefinitions, _han: HanOrder) -> Vec<String> {
-    Vec::new()
+fn load_fallback(fonts: &mut FontDefinitions, _han: HanOrder) -> Vec<String> {
+    // The browser has no system faces to read; the site may supply a Georgian one.
+    match SUPPLIED_GEORGIAN.get() {
+        Some(bytes) if font_parses(bytes, 0) => {
+            fonts.font_data.insert("sys-georgian".into(), Arc::new(FontData::from_owned(bytes.clone())));
+            vec!["sys-georgian".into()]
+        }
+        _ => Vec::new(),
+    }
+}
+
+static SUPPLIED_GEORGIAN: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+static SUPPLIED_GEORGIAN_NEW: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Uses `bytes` (a font file) as the Georgian fallback face where no system faces can be read (the
+/// web build, which fetches one beside the page); the app rebuilds its fonts on the next frame.
+/// Only the first call counts.
+pub fn set_georgian_font(bytes: Vec<u8>) {
+    if SUPPLIED_GEORGIAN.set(bytes).is_ok() {
+        SUPPLIED_GEORGIAN_NEW.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Whether a supplied Georgian face arrived since the last call.
+pub(crate) fn take_new_georgian_font() -> bool {
+    SUPPLIED_GEORGIAN_NEW.swap(false, std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Every fallback face we look for, in chain order: `(key, candidate files)`. One file per script

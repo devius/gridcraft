@@ -65,6 +65,7 @@ pub fn start() {
                         let _ = app.session.set_region(region.tag);
                     }
                     SheetApp::setup_context_for_language(&cc.egui_ctx, false, app.ui.language);
+                    load_georgian_font(cc.egui_ctx.clone());
                     if let Some(bridge) = &app_bridge {
                         if let Some(author) = query_param("author") {
                             crate::host::Bridge::set_author(&mut app, &author);
@@ -85,6 +86,39 @@ pub fn start() {
             }
         }
     });
+}
+
+/// The Georgian interface face, when the site serves one beside the page (no system faces are
+/// readable in a browser); without it the interface stays as it was.
+const GEORGIAN_FONT_URL: &str = "fonts/NotoSansGeorgian.ttf";
+
+fn load_georgian_font(ctx: egui::Context) {
+    wasm_bindgen_futures::spawn_local(async move {
+        match fetch_font(GEORGIAN_FONT_URL).await {
+            Ok(bytes) => {
+                gridcraft_ui_egui::theme::set_georgian_font(bytes);
+                ctx.request_repaint();
+            }
+            Err(e) => log::info!("no Georgian interface font at {GEORGIAN_FONT_URL}: {e}"),
+        }
+    });
+}
+
+/// A font file from the site: only a TrueType/OpenType file is returned (a host may answer a
+/// missing file with its index page).
+async fn fetch_font(url: &str) -> Result<Vec<u8>, String> {
+    let js = |e: JsValue| format!("{e:?}");
+    let window = web_sys::window().ok_or("no window")?;
+    let resp: web_sys::Response = wasm_bindgen_futures::JsFuture::from(window.fetch_with_str(url)).await.map_err(js)?.dyn_into().map_err(js)?;
+    if !resp.ok() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    let buf = wasm_bindgen_futures::JsFuture::from(resp.array_buffer().map_err(js)?).await.map_err(js)?;
+    let bytes = js_sys::Uint8Array::new(&buf).to_vec();
+    match bytes.get(..4) {
+        Some([0, 1, 0, 0] | b"OTTO" | b"true") if bytes.len() <= 32 << 20 => Ok(bytes),
+        _ => Err("not a font file".into()),
+    }
 }
 
 fn query() -> String {

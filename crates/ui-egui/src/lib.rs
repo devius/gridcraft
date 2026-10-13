@@ -997,7 +997,7 @@ impl SheetApp {
         // A keytip control request lives one frame: the ribbon consumes it during `ui`, and
         // anything that never reached a control (collapsed ribbon, tab switch) is dropped.
         self.ui.keytip_invoke = None;
-        if self.fonts_han.is_some_and(|han| han != theme::HanOrder::of(self.ui.language)) {
+        if theme::take_new_georgian_font() || self.fonts_han.is_some_and(|han| han != theme::HanOrder::of(self.ui.language)) {
             self.fonts_ready = false;
             self.fonts_set = false;
         }
