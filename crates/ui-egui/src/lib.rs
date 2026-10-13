@@ -319,6 +319,11 @@ impl SheetApp {
     }
 
     /// Sets up fonts and visuals for a specific persisted interface language.
+    /// Names new workbooks and sheets in the interface language (see `Session::set_language`).
+    fn sync_naming_language(&mut self) {
+        self.session.set_language(self.ui.language.code());
+    }
+
     pub fn setup_context_for_language(ctx: &egui::Context, dark: bool, language: i18n::Language) {
         ctx.set_fonts(theme::font_definitions_for_language(language));
         theme::apply(ctx, dark);
@@ -1106,6 +1111,7 @@ impl SheetApp {
         text_box::before_ui(self, &ctx);
         // The language the widgets translate with this frame (see `i18n::current`).
         i18n::set_current(&ctx, self.ui.language);
+        self.sync_naming_language();
         let t = theme::Tokens::get(&ctx);
         if self.backstage.is_none() {
             self.ribbon_keys(&ctx);
