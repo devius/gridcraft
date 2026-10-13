@@ -71,7 +71,7 @@ native speaker's review.
 | Comment / Note | კომენტარი / შენიშვნა |
 | Currency / Accounting / Percentage | ფულადი / საბუღალტრო / პროცენტული |
 | Lookup & Reference | ძებნა და ცნობარები |
-| Blank workbook / Save As | ცარიელი სამუშაო წიგნი / შენახვა სხვა სახელით |
+| Blank workbook / Save As | ცარიელი სამუშაო წიგნი / შენახვა როგორც |
 | Options / Regional format | პარამეტრები / რეგიონული ფორმატი |
 
 Commands are verbal nouns (masdar: შენახვა, წაშლა), not imperatives; `…` stays on labels that open
