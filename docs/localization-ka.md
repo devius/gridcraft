@@ -45,7 +45,7 @@ native speaker's review.
 | English | ქართული |
 |---|---|
 | File / Home / Insert / Draw | ფაილი / მთავარი / ჩასმა / ხატვა |
-| Page Layout / Formulas / Data / Review / View | გვერდის განლაგება / ფორმულები / მონაცემები / რეცენზირება / ჩვენება |
+| Page Layout / Formulas / Data / Review / View | გვერდის განლაგება / ფორმულები / მონაცემები / განხილვა / ჩვენება |
 | Paste / Paste Special… | ჩასმა / სპეციალური ჩასმა… |
 | Cut / Copy | ამოჭრა / კოპირება |
 | Bold / Italic / Underline | მუქი / დახრილი / ხაზგასმული |
