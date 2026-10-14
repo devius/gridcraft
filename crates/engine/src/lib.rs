@@ -221,11 +221,11 @@ pub struct Prefs {
     /// dates and times are typed and shown. The apps start it from the system region on first
     /// run; `app.region` changes it. An unknown tag reads as en-US.
     pub region: String,
-    /// The interface language's code (`ka`, `en`…), set by the interface: new workbooks and
-    /// sheets are named in it (`წიგნი1`, `ფურცელი1`) as Excel names them in its own language.
-    /// Not saved: the interface keeps its own language preference.
+    /// The words new workbooks and sheets are named with (`Book`, `Sheet`), set by the interface
+    /// from its language's catalog, as Excel names them in its own language. Not saved: the
+    /// interface keeps its own language preference.
     #[serde(skip)]
-    pub language: String,
+    pub default_names: (String, String),
 }
 
 impl Default for Prefs {
@@ -241,7 +241,7 @@ impl Default for Prefs {
             user_dictionary: vec![],
             formula_bar: true,
             region: gridcraft_core::region::default_region().tag.into(),
-            language: "en".into(),
+            default_names: ("Book".into(), "Sheet".into()),
         }
     }
 }
@@ -356,21 +356,18 @@ impl Session {
             }
         }
     }
-    /// The words new workbooks and sheets are named with (`Book`, `Sheet`), in [`Prefs::language`].
-    pub fn default_names(&self) -> (&'static str, &'static str) {
-        if self.prefs.language.get(..2).is_some_and(|l| l.eq_ignore_ascii_case("ka")) {
-            ("წიგნი", "ფურცელი")
-        } else {
-            ("Book", "Sheet")
-        }
+    /// The words new workbooks and sheets are named with ([`Prefs::default_names`]).
+    pub fn default_names(&self) -> (String, String) {
+        self.prefs.default_names.clone()
     }
-    /// Switches [`Prefs::language`]. An untouched blank workbook (the one the app starts with) is
-    /// replaced by one named in the new language.
-    pub fn set_language(&mut self, code: &str) {
-        if self.prefs.language == code {
+    /// Sets [`Prefs::default_names`] (the interface passes its language's words). An untouched blank
+    /// workbook (the one the app starts with) is replaced by one with the new names. Empty words
+    /// keep the current ones.
+    pub fn set_default_names(&mut self, book: &str, sheet: &str) {
+        if book.trim().is_empty() || sheet.trim().is_empty() || self.prefs.default_names == (book.to_string(), sheet.to_string()) {
             return;
         }
-        self.prefs.language = code.to_string();
+        self.prefs.default_names = (book.to_string(), sheet.to_string());
         if self.documents().len() == 1 && self.active().is_some_and(DocState::is_untouched_blank) {
             self.close_document(0);
             self.new_workbook();
@@ -378,7 +375,7 @@ impl Session {
     }
     /// The name for a sheet added to the active workbook (`SheetN` in the interface language).
     pub fn next_sheet_name(&self) -> Result<String> {
-        Ok(self.doc()?.wb.next_sheet_name_in(self.default_names().1))
+        Ok(self.doc()?.wb.next_sheet_name_in(&self.default_names().1))
     }
     /// A new blank workbook titled `BookN`.
     pub fn new_workbook(&mut self) -> usize {
@@ -387,7 +384,7 @@ impl Session {
         let mut wb = Workbook::new();
         Arc::make_mut(&mut wb.sheets[0]).name = format!("{sheet}1");
         for _ in 1..self.prefs.sheets_in_new_workbook.clamp(1, 255) {
-            let name = wb.next_sheet_name_in(sheet);
+            let name = wb.next_sheet_name_in(&sheet);
             wb.sheets.push(Arc::new(gridcraft_model::Sheet::new(name)));
         }
         self.add_document(DocState::new(wb, None, format!("{book}{n}")))
