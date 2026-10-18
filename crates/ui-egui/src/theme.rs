@@ -444,9 +444,9 @@ pub fn font_definitions_with(language: crate::i18n::Language, used: &[String]) -
 
 /// Loads the system non-Latin fallback faces (one file per script family) and returns their keys so
 /// every family can carry them as fallback. egui's bundled fonts have no coverage beyond Latin, so
-/// without this a Thai, Hebrew, Japanese or Chinese workbook shows tofu boxes even though the text
-/// was read correctly. With a face installed those scripts get real glyphs instead of tofu; nothing
-/// is bundled, and a machine without the face keeps the old behaviour.
+/// without this a Thai, Hebrew, Georgian, Japanese or Chinese workbook shows tofu boxes even though
+/// the text was read correctly. With a face installed those scripts get real glyphs instead of tofu;
+/// nothing is bundled, and a machine without the face keeps the old behaviour.
 #[cfg(not(target_arch = "wasm32"))]
 fn load_fallback(fonts: &mut FontDefinitions, han: HanOrder) -> Vec<String> {
     let mut keys = Vec::new();
@@ -662,21 +662,17 @@ fn hebrew() -> Vec<(String, u32)> {
     v
 }
 
-/// Georgian (Mkhedruli and Mtavruli) faces. Windows has Sylfaen; macOS has SF Georgian (and Arial
-/// Unicode); Linux usually has Noto Sans Georgian or DejaVu Sans.
+/// Georgian faces. macOS ships SF Georgian; Windows has Sylfaen; Linux usually has Noto Sans
+/// Georgian or DejaVu Sans.
 #[cfg(not(target_arch = "wasm32"))]
 fn georgian() -> Vec<(String, u32)> {
-    let mac_sys = "/System/Library/Fonts";
-    let mac_sup = "/System/Library/Fonts/Supplemental";
     let win = std::env::var("WINDIR").map(|w| format!("{w}\\Fonts")).unwrap_or_else(|_| "C:\\Windows\\Fonts".into());
+    let lin = ["/usr/share/fonts/truetype/noto", "/usr/share/fonts/opentype/noto", "/usr/share/fonts/truetype", "/usr/share/fonts"];
     let mut v: Vec<(String, u32)> = Vec::new();
     v.push((format!("{win}\\sylfaen.ttf"), 0)); // Sylfaen
-    v.push((format!("{mac_sys}/SFGeorgian.ttf"), 0));
-    v.push((format!("{mac_sup}/Arial Unicode.ttf"), 0));
-    for d in LINUX_CJK_DIRS {
+    v.push(("/System/Library/Fonts/SFGeorgian.ttf".into(), 0));
+    for d in lin {
         v.push((format!("{d}/NotoSansGeorgian-Regular.ttf"), 0));
-        v.push((format!("{d}/noto/NotoSansGeorgian-Regular.ttf"), 0));
-        v.push((format!("{d}/DejaVuSans.ttf"), 0));
         v.push((format!("{d}/dejavu/DejaVuSans.ttf"), 0));
     }
     v
