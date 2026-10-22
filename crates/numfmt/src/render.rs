@@ -1,10 +1,9 @@
 //! Rendering a value with a parsed section.
 
 use gridcraft_core::DateSystem;
-use gridcraft_core::date::{datetime_from_serial, max_serial};
-use gridcraft_core::region::{Grouping, Region};
+use gridcraft_core::date::{MONTHS, WEEKDAYS, datetime_from_serial, max_serial};
 
-use crate::decimal::{decimal_digits, fixed, fixed_from_digits};
+use crate::decimal::{decimal_digits, fixed, fixed_from_digits, format_general_fit};
 use crate::parse::{DatePart, Section, Tok};
 
 /// Text being built plus the first repeat-fill position.
@@ -47,11 +46,11 @@ pub(crate) fn render_text(sec: &Section, text: &str) -> Out {
 }
 
 /// Renders a number through a General section (literals around the General keyword).
-pub(crate) fn render_general(sec: &Section, v: f64, width: usize, region: &Region) -> Out {
+pub(crate) fn render_general(sec: &Section, v: f64, width: usize) -> Out {
     let mut out = Out::default();
     for t in &sec.toks {
         match t {
-            Tok::General => out.push(&crate::general_fit_in(v, width, region).unwrap_or_else(|| "#".repeat(width.clamp(1, 11)))),
+            Tok::General => out.push(&format_general_fit(v, width).unwrap_or_else(|| "#".repeat(width.clamp(1, 11)))),
             Tok::Fill(c) => out.fill(*c),
             other => out.push(&other.literal_text()),
         }
@@ -59,13 +58,12 @@ pub(crate) fn render_general(sec: &Section, v: f64, width: usize, region: &Regio
     out
 }
 
-/// Renders a date/time from the section's tokens (or the region's, for `[$-F800]`). Month and day
-/// names and AM/PM are the region's. `None` when the serial is outside the supported range.
-pub(crate) fn render_date(toks: &[Tok], v: f64, sys: DateSystem, region: &Region) -> Option<Out> {
+/// Renders a date/time. `None` when the serial is outside the supported range.
+pub(crate) fn render_date(sec: &Section, v: f64, sys: DateSystem) -> Option<Out> {
     if !v.is_finite() || !(0.0..max_serial(sys) as f64 + 1.0).contains(&v) {
         return None;
     }
-    let sub_digits = toks.iter().filter_map(|t| if let Tok::Date(DatePart::SubSec(n)) = t { Some(*n) } else { None }).max().unwrap_or(0).min(3);
+    let sub_digits = sec.toks.iter().filter_map(|t| if let Tok::Date(DatePart::SubSec(n)) = t { Some(*n) } else { None }).max().unwrap_or(0).min(3);
     let unit: i64 = 10i64.pow(3 - sub_digits as u32);
     let mut day = v.floor() as i64;
     let mut ms = (((v - v.floor()) * 86_400_000.0) / unit as f64).round() as i64 * unit;
@@ -74,24 +72,18 @@ pub(crate) fn render_date(toks: &[Tok], v: f64, sys: DateSystem, region: &Region
         day += 1;
     }
     let total_ms = day.saturating_mul(86_400_000).saturating_add(ms);
-    let needs_date = toks.iter().any(|t| matches!(t, Tok::Date(d) if d.is_calendar()));
+    let needs_date = sec.toks.iter().any(|t| matches!(t, Tok::Date(d) if d.is_calendar()));
     let dt = if needs_date { datetime_from_serial(sys, day as f64)? } else { datetime_from_serial(sys, 0.0).unwrap_or_default() };
-    let ampm = toks.iter().any(|t| matches!(t, Tok::Date(DatePart::AmPm | DatePart::AP(..))));
-    // A month name next to a day is the form dates use (Russian `1 января`).
-    let with_day = toks.iter().any(|t| matches!(t, Tok::Date(DatePart::Day(n)) if *n <= 2));
+    let ampm = sec.toks.iter().any(|t| matches!(t, Tok::Date(DatePart::AmPm | DatePart::AP(..))));
     let hour = ms / 3_600_000;
     let minute = (ms / 60_000) % 60;
     let second = (ms / 1000) % 60;
     let milli = ms % 1000;
     let pad = |n: i64, w: u8| if w >= 2 { format!("{:0w$}", n, w = w.min(20) as usize) } else { n.to_string() };
-    let month_idx = (dt.month as usize).wrapping_sub(1);
-    let month_full = region.month_name(dt.month, with_day);
-    let month_abbr = region.months_abbr.get(month_idx).copied().unwrap_or("");
-    let month_initial = region.months.get(month_idx).and_then(|m| m.chars().next()).map(String::from).unwrap_or_default();
-    let day_full = region.weekdays.get(dt.weekday as usize).copied().unwrap_or("");
-    let day_abbr = region.weekdays_abbr.get(dt.weekday as usize).copied().unwrap_or("");
+    let month_name = MONTHS.get((dt.month as usize).wrapping_sub(1)).copied().unwrap_or("");
+    let day_name = WEEKDAYS.get(dt.weekday as usize).copied().unwrap_or("");
     let mut out = Out::default();
-    for t in toks {
+    for t in &sec.toks {
         match t {
             Tok::Date(d) => {
                 let s = match *d {
@@ -104,14 +96,14 @@ pub(crate) fn render_date(toks: &[Tok], v: f64, sys: DateSystem, region: &Region
                     }
                     DatePart::Month(n) => match n {
                         1 | 2 => pad(dt.month as i64, n),
-                        3 => month_abbr.to_string(),
-                        5 => month_initial.clone(),
-                        _ => month_full.to_string(),
+                        3 => month_name.chars().take(3).collect(),
+                        5 => month_name.chars().take(1).collect(),
+                        _ => month_name.to_string(),
                     },
                     DatePart::Day(n) => match n {
                         1 | 2 => pad(dt.day as i64, n),
-                        3 => day_abbr.to_string(),
-                        _ => day_full.to_string(),
+                        3 => day_name.chars().take(3).collect(),
+                        _ => day_name.to_string(),
                     },
                     DatePart::Hour(n) => {
                         let h = if ampm {
@@ -135,7 +127,7 @@ pub(crate) fn render_date(toks: &[Tok], v: f64, sys: DateSystem, region: &Region
                     DatePart::ElapsedH(n) => pad(total_ms / 3_600_000, n),
                     DatePart::ElapsedM(n) => pad(total_ms / 60_000, n),
                     DatePart::ElapsedS(n) => pad(total_ms / 1000, n),
-                    DatePart::AmPm => region.am_pm.get(usize::from(hour >= 12)).copied().unwrap_or("").to_string(),
+                    DatePart::AmPm => (if hour >= 12 { "PM" } else { "AM" }).to_string(),
                     DatePart::AP(a, p) => (if hour >= 12 { p } else { a }).to_string(),
                 };
                 out.push(&s);
@@ -147,19 +139,10 @@ pub(crate) fn render_date(toks: &[Tok], v: f64, sys: DateSystem, region: &Region
     Some(out)
 }
 
-/// True when a group separator goes before a digit that has `right` digits to its right.
-fn group_before(right: usize, grouping: Grouping) -> bool {
-    match grouping {
-        Grouping::Thousands => right > 0 && right.is_multiple_of(3),
-        // 12,34,567: three digits, then groups of two.
-        Grouping::Indian => right >= 3 && (right - 3).is_multiple_of(2),
-    }
-}
-
 /// Assigns integer digits right-to-left to the placeholders at `idxs`; the leftmost placeholder
 /// takes all remaining digits. `force_zero` shows `0` in the units placeholder when there are no
 /// digits. A blank `?` pads with a space, and so does the thousands separator it would carry.
-fn fill_int(toks: &[Tok], idxs: &[usize], digits: &str, thousands: bool, force_zero: bool, region: &Region, pieces: &mut [String]) {
+fn fill_int(toks: &[Tok], idxs: &[usize], digits: &str, thousands: bool, force_zero: bool, pieces: &mut [String]) {
     let ds: Vec<char> = digits.chars().collect();
     let mut rem = ds.len();
     let mut pos = 0usize;
@@ -172,8 +155,8 @@ fn fill_int(toks: &[Tok], idxs: &[usize], digits: &str, thousands: bool, force_z
         };
         let mut rev = String::new();
         let push_digit = |c: char, rev: &mut String, pos: &mut usize| {
-            if thousands && group_before(*pos, region.grouping) {
-                rev.push(region.group);
+            if thousands && *pos > 0 && pos.is_multiple_of(3) {
+                rev.push(',');
             }
             rev.push(c);
             *pos += 1;
@@ -204,15 +187,15 @@ fn fill_int(toks: &[Tok], idxs: &[usize], digits: &str, thousands: bool, force_z
     }
 }
 
-fn with_commas(digits: &str, thousands: bool, region: &Region) -> String {
+fn with_commas(digits: &str, thousands: bool) -> String {
     if !thousands {
         return digits.to_string();
     }
     let n = digits.chars().count();
     let mut s = String::with_capacity(n + n / 3);
     for (i, c) in digits.chars().enumerate() {
-        if i > 0 && group_before(n - i, region.grouping) {
-            s.push(region.group);
+        if i > 0 && (n - i).is_multiple_of(3) {
+            s.push(',');
         }
         s.push(c);
     }
@@ -248,7 +231,7 @@ fn digit_indices(toks: &[Tok], range: std::ops::Range<usize>) -> Vec<usize> {
 }
 
 /// Renders a non-negative number through a number section.
-pub(crate) fn render_number(sec: &Section, v: f64, region: &Region) -> Out {
+pub(crate) fn render_number(sec: &Section, v: f64) -> Out {
     let mut x = v.abs();
     // Observed: `%` in a scientific section is only a literal (`#%e+#` shows 123456.789 as
     // `1%e+5`).
@@ -271,7 +254,7 @@ pub(crate) fn render_number(sec: &Section, v: f64, region: &Region) -> Out {
     let mut zero = false;
     if sec.fraction {
         lits = vec![None; n];
-        render_fraction(sec, x, region, &mut pieces, &mut lits);
+        render_fraction(sec, x, &mut pieces, &mut lits);
     } else {
         let point = toks.iter().position(|t| matches!(t, Tok::Point));
         let exp = toks.iter().position(|t| matches!(t, Tok::Exp { .. }));
@@ -326,7 +309,7 @@ pub(crate) fn render_number(sec: &Section, v: f64, region: &Region) -> Out {
                     if let Some(b) = before.get_mut(first) {
                         *b = sign.to_string();
                     }
-                    fill_int(toks, &exp_idx, &digits, false, false, region, &mut pieces);
+                    fill_int(toks, &exp_idx, &digits, false, false, &mut pieces);
                 }
                 None => {
                     if let Some(p) = pieces.get_mut(e_at) {
@@ -339,19 +322,19 @@ pub(crate) fn render_number(sec: &Section, v: f64, region: &Region) -> Out {
             fixed(x, frac_idx.len())
         };
         zero = int_s.chars().chain(frac_s.chars()).all(|c| c == '0');
-        fill_int(toks, &int_idx, &int_s, sec.thousands, false, region, &mut pieces);
+        fill_int(toks, &int_idx, &int_s, sec.thousands, false, &mut pieces);
         if int_idx.is_empty()
             && !int_s.is_empty()
             && let Some(p) = point.or(exp)
             && let Some(b) = before.get_mut(p)
         {
-            *b = with_commas(&int_s, sec.thousands, region);
+            *b = with_commas(&int_s, sec.thousands);
         }
         fill_frac(toks, &frac_idx, &frac_s, &mut pieces);
         if let Some(p) = point
             && let Some(s) = pieces.get_mut(p)
         {
-            *s = region.decimal.to_string();
+            *s = ".".into();
         }
     }
     let mut out = Out::default();
@@ -449,7 +432,7 @@ fn blank_range(toks: &[Tok], range: std::ops::Range<usize>, spaces: bool, pieces
 /// becomes spaces when the whole part or the numerator has a `?`); when the fraction is zero and
 /// the numerator has no `0` placeholder, the separator, numerator, bar and denominator disappear
 /// (or become spaces when any part has a `?`) and the whole part shows at least `0`.
-fn render_fraction(sec: &Section, x: f64, region: &Region, pieces: &mut [String], lits: &mut [Option<String>]) {
+fn render_fraction(sec: &Section, x: f64, pieces: &mut [String], lits: &mut [Option<String>]) {
     let toks = &sec.toks;
     let is_digit = |i: usize| matches!(toks.get(i), Some(Tok::Digit(_)));
     let Some(slash) = toks.iter().position(|t| matches!(t, Tok::Slash)) else { return };
@@ -483,21 +466,27 @@ fn render_fraction(sec: &Section, x: f64, region: &Region, pieces: &mut [String]
     let has_q = |idx: &[usize]| idx.iter().any(|&i| toks.get(i) == Some(&Tok::Digit('?')));
     let has_whole = !whole_idx.is_empty();
     let (mut whole, f) = if has_whole { (x.floor(), x - x.floor()) } else { (0.0, x) };
-    let (mut num, den) = match fixed_den {
-        Some(d) => ((f * d as f64).round() as u64, d),
+    // Without a whole part the numerator carries the whole value and can pass u64::MAX, so it
+    // stays an f64 (a float-to-u64 cast saturates).
+    let (mut num, den): (f64, u64) = match fixed_den {
+        Some(d) => ((f * d as f64).round(), d),
+        None if f >= 1e15 => (f.round(), 1),
         None => {
             let digits = den_idx.len().clamp(1, 7) as u32;
-            approximate(f, 10u64.pow(digits) - 1)
+            let (n, d) = approximate(f, 10u64.pow(digits) - 1);
+            (n as f64, d)
         }
     };
-    if has_whole && num >= den && den > 0 {
-        whole += (num / den) as f64;
-        num %= den;
+    if has_whole && num >= den as f64 && den > 0 {
+        // The fractional part is below 1, so the numerator is at most the denominator here.
+        let n = num as u64;
+        whole += (n / den) as f64;
+        num = (n % den) as f64;
     }
     let whole_s = if whole >= 1.0 { fixed(whole, 0).0 } else { String::new() };
     let num_zero_ph = num_idx.iter().any(|&i| toks.get(i) == Some(&Tok::Digit('0')));
-    if has_whole && num == 0 && !num_zero_ph {
-        fill_int(toks, &whole_idx, &whole_s, sec.thousands, true, region, pieces);
+    if has_whole && num == 0.0 && !num_zero_ph {
+        fill_int(toks, &whole_idx, &whole_s, sec.thousands, true, pieces);
         let spaces = has_q(&whole_idx) || has_q(&num_idx) || has_q(&den_idx);
         blank_range(toks, sep_start..den_end, spaces, pieces, lits);
         return;
@@ -505,15 +494,16 @@ fn render_fraction(sec: &Section, x: f64, region: &Region, pieces: &mut [String]
     if has_whole {
         // A zero value shows `0` in a `?` or `0` units place, nothing in a `#` one.
         let units_hash = whole_idx.last().is_some_and(|&i| toks.get(i) == Some(&Tok::Digit('#')));
-        let force = whole_s.is_empty() && num == 0 && !units_hash;
-        fill_int(toks, &whole_idx, &whole_s, sec.thousands, force, region, pieces);
+        let force = whole_s.is_empty() && num == 0.0 && !units_hash;
+        fill_int(toks, &whole_idx, &whole_s, sec.thousands, force, pieces);
         let whole_shown = whole_idx.iter().any(|&i| pieces.get(i).is_some_and(|p| p.chars().any(|c| c.is_ascii_digit())));
         if !whole_shown {
             let spaces = has_q(&whole_idx) || has_q(&num_idx);
             blank_range(toks, sep_start..num_start, spaces, pieces, lits);
         }
     }
-    fill_int(toks, &num_idx, &num.to_string(), false, true, region, pieces);
+    let num_s = if num < 1e15 { (num as u64).to_string() } else { fixed(num, 0).0 };
+    fill_int(toks, &num_idx, &num_s, false, true, pieces);
     if let Some(p) = pieces.get_mut(slash) {
         *p = "/".into();
     }

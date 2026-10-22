@@ -10,21 +10,13 @@ use crate::{Clipboard, Session};
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
-        cmd!(
-            "cell.set",
-            "Enter Cell",
-            [],
-            None,
-            "{cell?: \"B2\", input: \"text, number or =formula\", sheet?, array?: bool, region?: \"de-DE\" — the region the text was typed in; without it the text is canonical en-US, so `1.234` is 1.234 (a JSON number `value` is never re-read)}",
-            has_doc,
-            cell_set
-        ),
+        cmd!("cell.set", "Enter Cell", [], None, "{cell?: \"B2\", input: \"text, number or =formula\", sheet?, array?: bool}", has_doc, cell_set),
         cmd!(
             "range.setValues",
             "Set Values",
             [],
             None,
-            "{range?: \"A1\", values: [[...]] (rows of numbers/strings/bools/null; strings starting with = are formulas), region?: tag the strings were typed in (default canonical en-US)}",
+            "{range?: \"A1\", values: [[...]] (rows of numbers/strings/bools/null; strings starting with = are formulas)}",
             has_doc,
             range_set_values
         ),
@@ -33,7 +25,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Fill Range With Input",
             [],
             Some("Ctrl+Enter"),
-            "{range?, input, region?}: enters the same input in every selected cell (relative formulas adjust); `region` is the tag the text was typed in (default canonical en-US)",
+            "{range?, input}: enters the same input in every selected cell (relative formulas adjust)",
             has_doc,
             range_fill
         ),
@@ -55,7 +47,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Paste",
             ["Home", "Clipboard"],
             Some("Cmd+V"),
-            "{at?: \"C3\", text?: \"tab-separated text from the system clipboard\", html?: \"the clipboard's HTML flavour; cells the source recorded as numbers (x:num, sdval) stay numbers\", region?: tag the text was typed in (default canonical en-US)}",
+            "{at?: \"C3\", text?: \"tab-separated text from the system clipboard\", html?: \"the clipboard's HTML flavour; cells the source recorded as numbers (x:num, sdval) stay numbers\"}",
             has_doc,
             paste
         ),
@@ -87,7 +79,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "AutoFill",
             [],
             None,
-            "{source: \"A1:A2\", target: \"A1:A10\", mode?: series|alternate|copy|formats|values}: the fill-handle drag (alternate = Ctrl+drag: a lone number counts up, any other series copies)",
+            "{source: \"A1:A2\", target: \"A1:A10\", mode?: series|alternate|copy|formats|values|extend}: the fill-handle drag (alternate = Ctrl+drag: a lone number counts up, any other series copies; values = Fill Without Formatting: the series, targets keep their formats; extend = Fill Series: the series, and a lone number counts up)",
             has_doc,
             auto_fill
         ),
@@ -126,29 +118,10 @@ pub fn specs() -> Vec<CommandSpec> {
 
 // ---------------------------------------------------------------- entry
 
-/// Whether text typed into a cell is a formula: it starts with `=`, or with `+` or `-` followed by a
-/// letter or `(` (`-A1`, `+SUM(1)`) unless `region` reads all of it as a number (`-R$ 5`). The
-/// formula-language boundary of the UI uses the same test, so the two never disagree.
-pub fn is_formula_input(input: &str, date_system: gridcraft_core::DateSystem, region: &gridcraft_core::Region) -> bool {
-    input.starts_with('=')
-        || (input.len() > 1
-            && (input.starts_with('+') || input.starts_with('-'))
-            && input.chars().nth(1).is_some_and(|c| c.is_ascii_alphabetic() || c == '(')
-            && !matches!(gridcraft_core::parse::parse_input_in(input, date_system, region).value, Value::Number(_)))
-}
-
 /// What typing `input` into a cell produces (constant or formula, plus an automatic number
 /// format). Inherits the destination's cell, row or column style, including its number
-/// format, before parsing. `region` is how the constants in `input` were typed: en-US for text
-/// that is canonical (files, other commands), the user's region for what they typed. Errors when
-/// the formula can't be parsed.
-pub(crate) fn input_to_cell(
-    input: &str,
-    sheet: usize,
-    at: CellRef,
-    wb: &mut gridcraft_model::Workbook,
-    region: &gridcraft_core::Region,
-) -> Result<Option<Cell>> {
+/// format, before parsing. Errors when the formula can't be parsed.
+pub(crate) fn input_to_cell(input: &str, sheet: usize, at: CellRef, wb: &mut gridcraft_model::Workbook) -> Result<Option<Cell>> {
     let style = wb.sheet(sheet).map(|sh| sh.style_id(at)).unwrap_or_default();
     if input.is_empty() {
         let c = Cell { value: Value::Empty, formula: None, style };
@@ -158,20 +131,14 @@ pub(crate) fn input_to_cell(
     if fmt_is_text {
         return Ok(Some(Cell { value: Value::text(input), formula: None, style }));
     }
-    if is_formula_input(input, wb.date_system, region) {
+    let is_formula = input.starts_with('=')
+        || (input.len() > 1
+            && (input.starts_with('+') || input.starts_with('-'))
+            && gridcraft_core::parse::parse_number_text(input).is_none()
+            && input.chars().nth(1).is_some_and(|c| c.is_ascii_alphabetic() || c == '('));
+    if is_formula {
         let body = input.strip_prefix('=').unwrap_or(input);
-        // Excel closes missing parentheses for you.
-        let mut text = body.to_string();
-        let mut parsed = gridcraft_formula::parse(&text);
-        for _ in 0..8 {
-            if parsed.is_ok() {
-                break;
-            }
-            text.push(')');
-            parsed = gridcraft_formula::parse(&text);
-        }
-        let expr = parsed.map_err(|e| EngineError::Other(format!("There's a problem with this formula: {e}")))?;
-        let expr = wb.name_call_case(expr);
+        let expr = wb.name_call_case(parse_typed_formula(body)?);
         check_arg_counts(&expr)?;
         let mut cell = Cell::formula(Formula::from_expr(expr));
         cell.style = style;
@@ -198,7 +165,17 @@ pub(crate) fn input_to_cell(
         }
         return Ok(Some(cell));
     }
-    let parsed = gridcraft_core::parse::parse_input_in(input, wb.date_system, region);
+    let mut parsed = gridcraft_core::parse::parse_input(input, wb.date_system);
+    // Like Excel's automatic percent entry: a bare number of 1 or more typed into a cell already
+    // formatted as a percentage is a percent (3 -> 3%); smaller numbers are taken as fractions.
+    if parsed.format.is_none()
+        && !input.contains('%')
+        && wb.styles.get(style).num_fmt.as_str().ends_with('%')
+        && let Value::Number(n) = parsed.value
+        && n.abs() >= 1.0
+    {
+        parsed.value = Value::Number(n / 100.0);
+    }
     let mut style = style;
     if let Some(code) = parsed.format {
         let cur = wb.styles.get(style).num_fmt.as_str().to_string();
@@ -213,11 +190,19 @@ pub(crate) fn input_to_cell(
     Ok(Some(Cell { value: parsed.value, formula: None, style }))
 }
 
+/// Parses a formula as it is typed (without the `=`). Excel closes missing parentheses for you,
+/// and refuses a formula that still doesn't parse.
+pub(crate) fn parse_typed_formula(body: &str) -> Result<gridcraft_formula::Expr> {
+    // Excel closes missing parentheses for you.
+    let parsed = gridcraft_formula::parse_closing_parens(body, gridcraft_formula::parse);
+    parsed.map_err(|e| EngineError::Other(format!("There's a problem with this formula: {e}")))
+}
+
 /// Like Excel, a formula that calls a built-in function with too few or too many arguments is
 /// refused when it's entered, rather than stored to show `#VALUE!`. Functions the registry doesn't
 /// hold (special forms like LET, LAMBDA, OFFSET, INDIRECT, SUBTOTAL), defined LAMBDA names and
 /// unknown functions are skipped.
-fn check_arg_counts(expr: &gridcraft_formula::Expr) -> Result<()> {
+pub(crate) fn check_arg_counts(expr: &gridcraft_formula::Expr) -> Result<()> {
     let mut bad = None;
     expr.walk(&mut |e| {
         if bad.is_none()
@@ -242,11 +227,7 @@ fn cell_set(s: &mut Session, p: &Json) -> Result<Json> {
         None => s.doc()?.selection.active,
     };
     // Both spellings take a string, number or boolean, as typed (#697).
-    let raw = p.get("input").or_else(|| p.get("value"));
-    let input = raw.map(json_to_input).ok_or_else(|| bad("cell.set", "missing `input` (or `value`)"))?;
-    // Text is typed in `region`; a JSON number or boolean is already a value and is canonical.
-    let typed = typed_region(p, "cell.set")?;
-    let region = if raw.is_some_and(Json::is_string) { typed } else { gridcraft_core::region::default_region() };
+    let input = p.get("input").or_else(|| p.get("value")).map(json_to_input).ok_or_else(|| bad("cell.set", "missing `input` (or `value`)"))?;
     let array = bool_param(p, "array").unwrap_or(false);
     let d = s.doc()?;
     if let Some(sh) = d.wb.sheet(sheet)
@@ -267,7 +248,7 @@ fn cell_set(s: &mut Session, p: &Json) -> Result<Json> {
             if !range.is_single() && cx.wb.sheet(sheet).is_some_and(|sh| sh.tables.iter().any(|t| t.range.intersects(&range))) {
                 return Err(EngineError::Other("Multi-cell array formulas aren't allowed in tables.".into()));
             }
-            let mut cell = input_to_cell(&input, sheet, range.start, &mut cx.wb, region)?.unwrap_or_default();
+            let mut cell = input_to_cell(&input, sheet, range.start, &mut cx.wb)?.unwrap_or_default();
             if let Some(f) = cell.formula.as_mut() {
                 std::sync::Arc::make_mut(f).array = Some(range);
             }
@@ -283,7 +264,7 @@ fn cell_set(s: &mut Session, p: &Json) -> Result<Json> {
             cx.touch(sheet, range.start);
             return Ok(Json::Null);
         }
-        let cell = input_to_cell(&input, sheet, at, &mut cx.wb, region)?;
+        let cell = input_to_cell(&input, sheet, at, &mut cx.wb)?;
         let sh = cx.sheet_mut(sheet)?;
         match cell {
             Some(c) => sh.set_cell(at, c),
@@ -321,7 +302,6 @@ fn range_set_values(s: &mut Session, p: &Json) -> Result<Json> {
     if rows.len() > MAX_ROWS as usize {
         return Err(bad("range.setValues", "too many rows"));
     }
-    let region = typed_region(p, "range.setValues")?;
     let mut count = 0;
     edit(s, |cx| {
         for (ri, row) in rows.iter().enumerate() {
@@ -341,7 +321,7 @@ fn range_set_values(s: &mut Session, p: &Json) -> Result<Json> {
                     Json::Bool(b) => {
                         Some(Cell { value: Value::Bool(*b), formula: None, style: cx.wb.sheet(sheet).map(|sh| sh.style_id(at)).unwrap_or_default() })
                     }
-                    _ => input_to_cell(&input, sheet, at, &mut cx.wb, region)?,
+                    _ => input_to_cell(&input, sheet, at, &mut cx.wb)?,
                 };
                 let sh = cx.sheet_mut(sheet)?;
                 match cell {
@@ -363,7 +343,6 @@ fn range_fill(s: &mut Session, p: &Json) -> Result<Json> {
     let sheet = target_sheet(s, p)?;
     let ranges = target_ranges(s, p)?;
     let input = str_param(p, "input").unwrap_or("").to_string();
-    let region = typed_region(p, "range.fill")?;
     let origin = s.doc()?.selection.active;
     edit(s, |cx| {
         // Each cell gets what typing the input there gives: the automatic number format where
@@ -379,7 +358,7 @@ fn range_fill(s: &mut Session, p: &Json) -> Result<Json> {
                 let base = match by_style.get(&style) {
                     Some(c) => c.clone(),
                     None => {
-                        let c = input_to_cell(&input, sheet, at, &mut cx.wb, region)?;
+                        let c = input_to_cell(&input, sheet, at, &mut cx.wb)?;
                         by_style.insert(style, c.clone());
                         c
                     }
@@ -401,6 +380,12 @@ fn range_fill(s: &mut Session, p: &Json) -> Result<Json> {
 
 // ---------------------------------------------------------------- selection
 
+/// Whether the cell may be selected: a protected sheet can forbid selecting locked and/or unlocked cells.
+fn cell_selectable(wb: &gridcraft_model::Workbook, sheet: &gridcraft_model::Sheet, c: CellRef) -> bool {
+    let Some(p) = sheet.protection.as_ref() else { return true };
+    if wb.styles.get(sheet.style_id(c)).protection.locked { p.select_locked } else { p.select_unlocked }
+}
+
 fn selection_set(s: &mut Session, p: &Json) -> Result<Json> {
     if p.get("sheet").is_some() {
         let i = target_sheet(s, p)?;
@@ -418,6 +403,9 @@ fn selection_set(s: &mut Session, p: &Json) -> Result<Json> {
     let mut sel = crate::Selection { active, anchor: ranges.last().map(|r| r.start).unwrap_or(active), ranges };
     if let Some(sh) = d.wb.active() {
         sel.expand_merges(sh);
+        if !cell_selectable(&d.wb, sh, sel.active) {
+            return Err(EngineError::Other("The cell you are trying to change is on a protected sheet that does not allow selecting it.".into()));
+        }
     }
     d.selection = sel;
     Ok(json!({"selection": d.selection.a1(), "active": d.selection.active.a1()}))
@@ -486,6 +474,29 @@ fn selection_move(s: &mut Session, p: &Json) -> Result<Json> {
     {
         to = m.start;
     }
+    if !extend && !cell_selectable(&d.wb, sheet, to) {
+        // Step on to the next selectable cell in the same direction; stay put if there is none.
+        let (sr, sc) = (dr.signum(), dc.signum());
+        let mut t = to;
+        let mut found = false;
+        if !jmp && (sr, sc) != (0, 0) {
+            for _ in 0..10_000 {
+                let n = t.offset_clamped(sr, sc);
+                if n == t {
+                    break;
+                }
+                t = n;
+                if !sheet.is_row_hidden(t.row) && !sheet.is_col_hidden(t.col) && cell_selectable(&d.wb, sheet, t) {
+                    found = true;
+                    break;
+                }
+            }
+        }
+        if !found {
+            return Ok(json!({"selection": sel.a1(), "active": sel.active.a1()}));
+        }
+        to = t;
+    }
     if extend {
         sel.extend_to(to);
         sel.expand_merges(sheet);
@@ -553,7 +564,7 @@ pub(super) fn go_to(s: &mut Session, p: &Json) -> Result<Json> {
         } else if let Some((si, ti)) = d.wb.table(reference) {
             // As in Excel, a table's name stands for its data, without the header and totals rows.
             let t = d.wb.sheet(si).and_then(|sh| sh.tables.get(ti)).map(|t| t.data_range().unwrap_or(t.range).a1()).unwrap_or_default();
-            format!("'{}'!{}", d.wb.sheet(si).map(|s| s.name.clone()).unwrap_or_default(), t)
+            format!("{}!{}", gridcraft_core::quote_sheet(&d.wb.sheet(si).map(|s| s.name.clone()).unwrap_or_default()), t)
         } else {
             return Err(EngineError::Other("Reference isn't valid.".into()));
         }
@@ -635,21 +646,20 @@ fn coalesce(cells: &[CellRef]) -> Vec<RangeRef> {
 
 fn undo(s: &mut Session, p: &Json) -> Result<Json> {
     let steps = u32_param(p, "steps").unwrap_or(1).max(1);
-    let region = s.region();
     let d = s.doc_mut()?;
     let mut label = String::new();
     let now = d.wb.clone();
     for _ in 0..steps {
         let Some(e) = d.undo.pop() else { break };
+        let cur_wb = d.wb.clone();
         // Redo goes back to the undone edit's cells, not wherever the user clicked before undoing (#1855).
-        let cur = crate::HistoryEntry { label: e.label.clone(), wb: d.wb.clone(), selection: e.selection.clone() };
-        d.redo.push(cur);
+        let cur_selection = e.selection.clone();
         label = e.label.clone();
         d.wb = e.wb;
         d.selection = e.selection;
+        crate::push_history(&mut d.redo, label.clone(), cur_wb, &d.wb, cur_selection);
     }
     super::extra::keep_watch_list(&now, &mut d.wb);
-    d.apply_region(region);
     d.calc.rebuild(&d.wb);
     d.revision += 1;
     Ok(json!({"undone": label}))
@@ -657,20 +667,19 @@ fn undo(s: &mut Session, p: &Json) -> Result<Json> {
 
 fn redo(s: &mut Session, p: &Json) -> Result<Json> {
     let steps = u32_param(p, "steps").unwrap_or(1).max(1);
-    let region = s.region();
     let d = s.doc_mut()?;
     let mut label = String::new();
     let now = d.wb.clone();
     for _ in 0..steps {
         let Some(e) = d.redo.pop() else { break };
-        let cur = crate::HistoryEntry { label: e.label.clone(), wb: d.wb.clone(), selection: d.selection.clone() };
-        d.undo.push(cur);
+        let cur_wb = d.wb.clone();
+        let cur_selection = d.selection.clone();
         label = e.label.clone();
         d.wb = e.wb;
         d.selection = e.selection;
+        crate::push_history(&mut d.undo, label.clone(), cur_wb, &d.wb, cur_selection);
     }
     super::extra::keep_watch_list(&now, &mut d.wb);
-    d.apply_region(region);
     d.calc.rebuild(&d.wb);
     d.revision += 1;
     Ok(json!({"redone": label}))
@@ -836,17 +845,17 @@ fn paste(s: &mut Session, p: &Json) -> Result<Json> {
 fn paste_text(s: &mut Session, p: &Json, text: &str) -> Result<Json> {
     let sheet = target_sheet(s, p)?;
     let at = cell_param_on(s, p, "at", sheet)?.unwrap_or(s.doc()?.selection.current().start);
-    let region = typed_region(p, "edit.paste")?;
     let rows: Vec<Vec<String>> = parse_tsv(text);
-    // The HTML flavour, when the host passed it: the number behind each cell's shown text.
-    let html = str_param(p, "html").map(crate::clip_html::table_cells).unwrap_or_default();
     let h = rows.len();
     let w = rows.iter().map(Vec::len).max().unwrap_or(0);
+    // The HTML flavour, when the host passed it: the number behind each cell's shown text. Read
+    // only as far as the text's own shape, so spans in the markup can't expand without bound.
+    let html = str_param(p, "html").map(|html| crate::clip_html::table_cells(html, h, w)).unwrap_or_default();
     edit(s, |cx| {
         for (ri, row) in rows.iter().enumerate() {
             for (ci, v) in row.iter().enumerate() {
                 let Some(c) = at.offset(ri as i64, ci as i64) else { continue };
-                let mut cell = input_to_cell(v, sheet, c, &mut cx.wb, region).unwrap_or_else(|_| Some(Cell::value(Value::text(v.as_str()))));
+                let mut cell = input_to_cell(v, sheet, c, &mut cx.wb).unwrap_or_else(|_| Some(Cell::value(Value::text(v.as_str()))));
                 if let Some(cl) = cell.as_mut() {
                     numeric_from_html(cl, v, html.get(ri).and_then(|r| r.get(ci)), &mut cx.wb);
                 }
@@ -981,6 +990,10 @@ fn paste_special(s: &mut Session, p: &Json) -> Result<Json> {
     let src_wb = clip.wb.clone();
     let Some(src_sheet) = src_wb.sheet(clip.sheet) else { return Err(EngineError::Other("The copied sheet no longer exists.".into())) };
     let src_sheet_name = src_sheet.name.clone();
+    if cut_move && at.offset((tiles_r * h).saturating_sub(1) as i64, (tiles_c * w).saturating_sub(1) as i64).is_none() {
+        // Check the whole footprint before the source is emptied, so a move that overflows the grid loses nothing.
+        return Err(EngineError::Other("The cut area doesn't fit at this position; nothing was moved.".into()));
+    }
     edit(s, |cx| {
         // Styles from another workbook must be re-interned.
         let mut style_map = std::collections::HashMap::new();
@@ -997,6 +1010,13 @@ fn paste_special(s: &mut Session, p: &Json) -> Result<Json> {
             let source = cx.sheet_mut(clip.sheet)?;
             moved_pictures = source.cell_pictures.iter().filter(|(c, _)| src.contains(**c)).map(|(c, p)| (*c, p.clone())).collect();
             let taken = source.take_cells(src);
+            // Notes, hyperlinks and merged areas sit beside the cells, and a cut takes them
+            // with the block: the destination is written from the clipboard snapshot taken
+            // before the cut, so removing them here loses nothing and leaves the old place
+            // clean instead of leaving one merged block and one note behind.
+            source.comments.retain(|c, _| !src.contains(*c));
+            source.hyperlinks.retain(|c, _| !src.contains(*c));
+            source.merges.retain(|m| !src.contains_range(m));
             for (c, _) in &taken {
                 cx.touch(clip.sheet, *c);
             }
@@ -1044,11 +1064,12 @@ fn paste_special(s: &mut Session, p: &Json) -> Result<Json> {
                                 // The array range moves with its formula.
                                 let (dr, dc) = (dest.row as i64 - sc.row as i64, dest.col as i64 - sc.col as i64);
                                 moved.array = f.array.and_then(|a| Some(RangeRef::new(a.start.offset(dr, dc)?, a.end.offset(dr, dc)?)));
+                                moved.dynamic = f.dynamic;
                                 return Some(std::sync::Arc::new(moved));
                             }
                             let moved =
                                 gridcraft_formula::adjust::shift_relative(e, dest.row as i64 - sc.row as i64, dest.col as i64 - sc.col as i64);
-                            Some(std::sync::Arc::new(Formula::from_expr(moved)))
+                            Some(std::sync::Arc::new(Formula { dynamic: f.dynamic, ..Formula::from_expr(moved) }))
                         };
                         if link {
                             let sheet_prefix = if dest_sheet == clip.sheet && same_doc {
@@ -1175,6 +1196,9 @@ fn paste_special(s: &mut Session, p: &Json) -> Result<Json> {
                                 if let Some(cm) = src_sheet.comments.get(&sc).cloned() {
                                     cx.sheet_mut(dest_sheet)?.comments.insert(dest, cm);
                                 }
+                                if let Some(h) = src_sheet.hyperlinks.get(&sc).cloned() {
+                                    cx.sheet_mut(dest_sheet)?.hyperlinks.insert(dest, h);
+                                }
                                 cx.sheet_mut(dest_sheet)?.set_cell(dest, new);
                             }
                             _ => cx.sheet_mut(dest_sheet)?.set_cell(dest, new),
@@ -1250,12 +1274,13 @@ pub(crate) fn rewrite_all_formulas(wb: &mut gridcraft_model::Workbook, target: &
             {
                 let mut nf = Formula::from_expr(new);
                 nf.array = array;
+                nf.dynamic = f.dynamic;
                 cell.formula = Some(std::sync::Arc::new(nf));
             }
         }
     }
     for n in wb.names.iter_mut() {
-        if let Ok(expr) = gridcraft_formula::parse(&n.formula) {
+        if let Ok(expr) = gridcraft_formula::parse_name(&n.formula) {
             // Names are workbook-level: unqualified refs don't occur; qualified ones adjust.
             let new = gridcraft_formula::adjust::adjust(expr, "\u{0}", target, e);
             n.formula = gridcraft_formula::print(&new);
@@ -1368,7 +1393,7 @@ fn fill_dir(s: &mut Session, p: &Json, dr: i64, dc: i64) -> Result<Json> {
             None => return Ok(Json::Null),
         }
     }
-    if r.count() > 5_000_000 {
+    if r.count() > crate::fill::MAX_FILL_CELLS {
         return Err(bad("edit.fill", "range too large"));
     }
     // With one row selected, Fill Down copies from the row above (Excel behaviour).
@@ -1402,10 +1427,17 @@ fn auto_fill(s: &mut Session, p: &Json) -> Result<Json> {
         "alternate" => crate::fill::FillMode::Alternate,
         "formats" => crate::fill::FillMode::Formats,
         "values" => crate::fill::FillMode::ValuesOnly,
+        "extend" => crate::fill::FillMode::Extend,
         _ => crate::fill::FillMode::Series,
     };
-    if target.count() > 5_000_000 || src.count() > 5_000_000 {
+    if target.count() > crate::fill::MAX_FILL_CELLS || src.count() > crate::fill::MAX_FILL_CELLS {
         return Err(bad("edit.autoFill", "range too large"));
+    }
+    // Excel refuses a target that doesn't hold the source in a corner. Such targets used to fill
+    // every source lane across the whole target extent: billions of cells for whole rows (`2:3`)
+    // into whole columns (`A:A`).
+    if !crate::fill::holds_source_in_corner(src, target) {
+        return Err(bad("edit.autoFill", "the target must contain the source in one of its corners"));
     }
     edit(s, |cx| {
         crate::fill::fill(cx, sheet, src, target, mode)?;
@@ -1574,9 +1606,7 @@ fn replace(s: &mut Session, p: &Json) -> Result<Json> {
                 } else {
                     replace_ci(&text, &what, &with)
                 };
-                // `new` is built from `input_text`, which is canonical.
-                let cell = input_to_cell(&new, si, c, &mut cx.wb, &gridcraft_core::region::EN_US)
-                    .unwrap_or_else(|_| Some(Cell::value(Value::text(new.as_str()))));
+                let cell = input_to_cell(&new, si, c, &mut cx.wb).unwrap_or_else(|_| Some(Cell::value(Value::text(new.as_str()))));
                 let sh = cx.sheet_mut(si)?;
                 match cell {
                     Some(cell) => sh.set_cell(c, cell),
@@ -1593,10 +1623,24 @@ fn replace(s: &mut Session, p: &Json) -> Result<Json> {
     Ok(json!({"replaced": n}))
 }
 
+/// Whether case-folding `s` maps every char to exactly one char of the same UTF-8 length, so
+/// byte positions in the folded text still line up with the original's character boundaries.
+fn folds_in_place(s: &str) -> bool {
+    s.chars().all(|c| {
+        let mut folded = c.to_lowercase();
+        let first = folded.next();
+        folded.next().is_none() && first.is_some_and(|l| l.len_utf8() == c.len_utf8())
+    })
+}
+
 fn replace_ci(text: &str, what: &str, with: &str) -> String {
     let lower = text.to_lowercase();
     let w = what.to_lowercase();
-    if lower.len() != text.len() || w.is_empty() {
+    // Slicing `text` at positions found in `lower` is only sound when folding kept every byte
+    // boundary: a length check alone misses foldings that keep the total length while shifting
+    // boundaries (U+212A KELVIN SIGN shrinks 3→1 bytes, U+0130 grows 2→3), where the tail used
+    // to be dropped. Those fall back to the case-sensitive replace, as length changes already do.
+    if lower.len() != text.len() || w.is_empty() || !folds_in_place(text) || !folds_in_place(what) {
         return text.replace(what, with);
     }
     let mut out = String::new();
@@ -1621,6 +1665,63 @@ fn format_painter(s: &mut Session, p: &Json) -> Result<Json> {
             let Some(src_sheet) = wb.sheet(sheet) else { return Ok(()) };
             let (h, w) = (src.height(), src.width());
             let dest = if dest.is_single() { RangeRef::new(dest.start, dest.start.offset_clamped(h as i64 - 1, w as i64 - 1)) } else { dest };
+            // Whole rows or columns take a line format, as the ribbon's formatting commands give
+            // them, instead of a style on each of their cells (a column alone has a million). The
+            // line format comes from the first cell of the source pattern across the line; cells
+            // already stored follow the pattern. Row heights and column widths stay as they are.
+            let rows = dest.is_full_rows() && !dest.is_full_cols();
+            let cols = dest.is_full_cols() && !dest.is_full_rows();
+            let src_full = (rows && src.is_full_rows()) || (cols && src.is_full_cols());
+            if rows || cols {
+                let (first, src_first, n) = if rows { (dest.start.row, src.start.row, h) } else { (dest.start.col, src.start.col, w) };
+                let lines = if rows { dest.start.row..=dest.end.row } else { dest.start.col..=dest.end.col };
+                for line in lines {
+                    let sl = src_first + (line - first) % n;
+                    // The source cell for position `k` along the line.
+                    let at = |k: u32| if rows { CellRef::new(sl, src.start.col + k % w) } else { CellRef::new(src.start.row + k % h, sl) };
+                    let line_style = if src_full {
+                        if rows { src_sheet.rows.get(&sl) } else { src_sheet.cols.get(&sl) }.and_then(|i| i.style)
+                    } else {
+                        Some(src_sheet.style_id(at(0)))
+                    };
+                    let line_style = line_style.map(|st| if same { st } else { cx.wb.styles.intern(wb.styles.get(st).clone()) });
+                    let (dest_line, src_line) = if rows {
+                        (RangeRef::rows(line, line), RangeRef::rows(sl, sl))
+                    } else {
+                        (RangeRef::cols(line, line), RangeRef::cols(sl, sl))
+                    };
+                    let mut cells: Vec<CellRef> =
+                        cx.wb.sheet(dest_sheet).map(|sh| sh.cells.iter_range(dest_line).map(|(c, _)| c).collect()).unwrap_or_default();
+                    if src_full {
+                        cells.extend(
+                            src_sheet
+                                .cells
+                                .iter_range(src_line)
+                                .map(|(c, _)| if rows { CellRef::new(line, c.col) } else { CellRef::new(c.row, line) }),
+                        );
+                    }
+                    if cols {
+                        // A row format outranks a column format: the column's cells in formatted
+                        // rows need a style of their own.
+                        cells.extend(
+                            cx.wb
+                                .sheet(dest_sheet)
+                                .into_iter()
+                                .flat_map(|sh| sh.rows.iter().filter(|(_, i)| i.style.is_some()).map(|(r, _)| CellRef::new(*r, line))),
+                        );
+                    }
+                    let sh = cx.sheet_mut(dest_sheet)?;
+                    (if rows { &mut sh.rows } else { &mut sh.cols }).entry(line).or_default().style = line_style;
+                    for c in cells {
+                        let st = src_sheet.style_id(at(if rows { c.col } else { c.row }));
+                        let st = if same { st } else { cx.wb.styles.intern(wb.styles.get(st).clone()) };
+                        cx.sheet_mut(dest_sheet)?.set_style(c, st);
+                        cx.touch(dest_sheet, c);
+                    }
+                }
+                *cx.sel = crate::Selection::range(dest);
+                return Ok(());
+            }
             for c in dest.iter().take(2_000_000) {
                 let sc = CellRef::new(src.start.row + (c.row - dest.start.row) % h, src.start.col + (c.col - dest.start.col) % w);
                 let st = src_sheet.style_id(sc);
@@ -1740,7 +1841,43 @@ mod tests {
     }
 
     #[test]
+    fn cut_paste_that_overflows_the_grid_moves_nothing() {
+        // #997: the source was emptied first and the cells that fell off the grid were skipped.
+        let mut s = Session::new();
+        s.new_workbook();
+        s.execute("range.setValues", json!({"range": "A1", "values": [[1], [2]]})).unwrap();
+        let get = |s: &mut Session, a: &str| s.execute("cell.get", json!({"cell": a})).unwrap();
+        s.execute("edit.cut", json!({"range": "A1:A2"})).unwrap();
+        // Transposed, the 2 rows become 2 columns and the second one is past XFD.
+        assert!(s.execute("edit.pasteSpecial", json!({"what": "all", "transpose": true, "at": "XFD1"})).is_err());
+        assert_eq!(get(&mut s, "A1")["value"], json!(1.0));
+        assert_eq!(get(&mut s, "A2")["value"], json!(2.0));
+        // Not transposed, the second row would be past the last row.
+        assert!(s.execute("edit.pasteSpecial", json!({"what": "all", "at": "A1048576"})).is_err());
+        assert_eq!(get(&mut s, "A1")["value"], json!(1.0));
+        assert_eq!(get(&mut s, "A2")["value"], json!(2.0));
+        // Not transposed it still fits in column XFD.
+        s.execute("edit.pasteSpecial", json!({"what": "all", "at": "XFD1"})).unwrap();
+        assert_eq!(get(&mut s, "XFD1")["value"], json!(1.0));
+        assert_eq!(get(&mut s, "XFD2")["value"], json!(2.0));
+    }
+
+    #[test]
     fn replace_case_insensitive() {
         assert_eq!(replace_ci("Apple apple APPLE", "apple", "pear"), "pear pear pear");
+    }
+
+    #[test]
+    fn replace_case_insensitive_keeps_text_when_folding_moves_boundaries() {
+        // U+212A KELVIN SIGN folds to `k` (3→1 bytes) while U+0130 folds to `i` plus a
+        // combining dot (2→3 bytes): the folded text is the same length but its byte positions
+        // no longer line up with the original, and the old slicing dropped the tail.
+        let mut s = Session::new();
+        s.new_workbook();
+        let text = "\u{212A}\u{0130}\u{0130}";
+        s.execute("cell.set", json!({"cell": "A1", "input": text})).unwrap();
+        s.execute("edit.replace", json!({"what": "k", "with": "x"})).unwrap();
+        let sh = s.doc().unwrap().wb.active().unwrap();
+        assert_eq!(sh.value(CellRef::new(0, 0)), Value::text(text));
     }
 }

@@ -9,11 +9,10 @@ app reads `navigator.language`). The language code is `ka`: `app.language.set` w
 `ui.json` with the other interface settings. Workbook contents, function names, command ids,
 CLI/MCP/control responses and file paths do not change.
 
-Numbers, dates and times follow the separate **File › Options › Regional format › ქართული
-(საქართველო)** (`app.region` with `{"region": "ka-GE"}`), which a Georgian system selects on first
-run: decimal comma, no-break-space digit groups, `dd.mm.yyyy` short date, `dddd, d mmmm, yyyy` long
-date, 24-hour time, Georgian month and weekday names (typed month names are read too), and the lari
-after the amount (`1 234,50 ₾`). Number format codes and files stay en-US.
+Numbers, dates and times keep GridCraft's default (en-US) formats for now. A Georgian regional
+format (decimal comma, `dd.mm.yyyy`, the lari after the amount) needs upstream regional-format
+support: #447 was closed on 2026-10-15 and is being split into smaller PRs, so this branch dropped
+it on 2026-10-22 and adds `ka-GE` again once those land.
 
 `crates/ui-egui/src/i18n/ka.rs` translates all 973 interface keys that any language table or
 `tr()` call uses: the ribbon, sheet tabs, status bar modes, number-format names, Backstage (File)
@@ -86,13 +85,13 @@ in `i18n.rs`'s `JAPANESE` table or another language's file. Keep `\n` in
 ribbon labels at a natural word boundary, and keep `{page}`-style placeholders, shortcuts in
 parentheses (`(⌘X)`) and `…` exactly. A `context|label` key (`Page Layout|Orientation`)
 translates the label in that context. `cargo test -p gridcraft-ui-egui --lib i18n` fails when a key
-has no Georgian translation (`missing Georgian: …`) and checks the `ka`/`ka-GE` tags; regions are
-checked by `cargo test -p gridcraft-core region` and `cargo test -p gridcraft-numfmt`; the
+has no Georgian translation (`missing Georgian: …`) and checks the `ka`/`ka-GE` tags; the
 Georgian face by `theme::tests::fallback_covers_its_script`.
 
 ## Revision history
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-22 | minor | Rebuilt on main without #447 (closed upstream; regional formats return with its split PRs); 25 new keys |
 | 2026-10-13 | minor | Rebuilt on main plus #447: all 973 keys any table uses; View = ხედი |
 | 2026-10-13 | minor | Created: Georgian interface table (382 keys), ka-GE regional format, font fallback, casing, Georgian samples, terminology |
