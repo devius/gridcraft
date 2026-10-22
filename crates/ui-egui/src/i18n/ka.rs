@@ -1013,7 +1013,9 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Unhide…" => "გამოჩენა…",
         "Select All Sheets" => "ყველა ფურცლის მონიშვნა",
         "All sheets" => "ყველა ფურცელი",
-        "AutoSave: save after every change (workbooks saved to a file)" => "ავტოშენახვა: შენახვა ყოველი ცვლილების შემდეგ (ფაილში შენახული სამუშაო წიგნებისთვის)",
+        "AutoSave: save after every change (workbooks saved to a file)" => {
+            "ავტოშენახვა: შენახვა ყოველი ცვლილების შემდეგ (ფაილში შენახული სამუშაო წიგნებისთვის)"
+        }
         _ => return None,
     })
 }
