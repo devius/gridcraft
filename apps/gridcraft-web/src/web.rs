@@ -41,6 +41,19 @@ pub fn start() {
         // workbooks in it and stores what it saves (`host`).
         let bridge = if query_param("host").as_deref() == Some("parent") { crate::host::Bridge::new() } else { None };
         let app_bridge = bridge.clone();
+        // A Georgian browser gets Georgian only with its face: fetch it before the first frame
+        // (no tofu flash), and keep English if the site has none.
+        let browser = gridcraft_ui_egui::i18n::Language::system();
+        let mut georgian_font = false;
+        if browser == gridcraft_ui_egui::i18n::Language::Ka {
+            match fetch_font(GEORGIAN_FONT_URL).await {
+                Ok(bytes) => {
+                    gridcraft_ui_egui::theme::set_georgian_font(bytes);
+                    georgian_font = true;
+                }
+                Err(e) => log::info!("no Georgian interface font at {GEORGIAN_FONT_URL}: {e}"),
+            }
+        }
         let result = eframe::WebRunner::new()
             .start(
                 canvas,
@@ -50,12 +63,10 @@ pub fn start() {
                     let mut session = Session::new();
                     // In host mode the parent sends the workbook to edit; no sample meanwhile.
                     let q = if app_bridge.is_some() { String::new() } else { query() };
-                    // Follow the browser's language, except a CJK one: CJK coverage comes from optional
-                    // craft-fonts input, not a guaranteed web font set, so it could render as tofu.
-                    // Georgian uses the face fetched beside the page (`load_georgian_font`).
-                    // Samples are written in that language (Georgian for `ka`).
-                    let browser = gridcraft_ui_egui::i18n::Language::system();
-                    let language = if browser.draws_on_web() { browser } else { Default::default() };
+                    // Follow the browser's language, except one the web build can't draw (CJK, or
+                    // Georgian when the site serves no Georgian face): it would be tofu. Samples are
+                    // written in that language (Georgian for `ka`).
+                    let language = if browser.draws_on_web() || georgian_font { browser } else { Default::default() };
                     if let Some(name) = q.split(['?', '&']).find_map(|kv| kv.strip_prefix("sample=")) {
                         let _ = session.execute("file.new", serde_json::json!({"sample": name, "language": language.code()}));
                     } else if q.contains("sample") {
@@ -85,7 +96,10 @@ pub fn start() {
                     crate::prefs::restore(&mut app, stored_ui.as_deref(), stored_prefs.as_deref());
                     let mut prefs = crate::prefs::PrefsSync::new(stored_ui, stored_prefs);
                     SheetApp::setup_context_for_language(&cc.egui_ctx, false, app.ui.language);
-                    load_georgian_font(cc.egui_ctx.clone());
+                    // Georgian picked later, in the app: fetch its face then (once).
+                    if !georgian_font {
+                        load_georgian_font(cc.egui_ctx.clone());
+                    }
                     if let Some(bridge) = &app_bridge {
                         prefs.keep_user_name(app.session.prefs.user_name.clone());
                         if let Some(author) = query_param("author") {
