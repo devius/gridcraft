@@ -113,7 +113,7 @@ pub fn build_in(name: &str, lang: &str) -> Option<Workbook> {
             _ => return None,
         };
     }
-    s.add_document(DocState::new(wb, None, title_in(name, lang)));
+    s.add_document(DocState::new(wb, None, title_in(name, lang), crate::Trust::Local));
     let ok = match name {
         "budget" => budget(&mut s, t),
         "sales" => sales(&mut s, t),
@@ -124,7 +124,7 @@ pub fn build_in(name: &str, lang: &str) -> Option<Workbook> {
         return None;
     }
     let mut wb = (*s.doc().ok()?.wb).clone();
-    wb.active_sheet = 0;
+    wb.set_active_sheet(0);
     if let Some(sh) = wb.sheet_mut(0) {
         sh.view_active = gridcraft_core::CellRef::default();
     }
