@@ -1188,6 +1188,9 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Sunburst" => "მზისებრი",
         "Stock" => "საბირჟო",
         "Bar" => "ზოლოვანი",
+        "Drag to fill cells. Drag from inside a cell to select a range." => {
+            "გადაათრიეთ უჯრების შესავსებად. დიაპაზონის მოსანიშნად გადაათრიეთ უჯრის შიგნიდან."
+        }
         _ => return None,
     })
 }
