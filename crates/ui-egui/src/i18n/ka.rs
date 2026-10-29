@@ -1191,6 +1191,14 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Drag to fill cells. Drag from inside a cell to select a range." => {
             "გადაათრიეთ უჯრების შესავსებად. დიაპაზონის მოსანიშნად გადაათრიეთ უჯრის შიგნიდან."
         }
+        "Record Macro" => "მაკროსის ჩაწერა",
+        "Stop Recording" => "ჩაწერის შეწყვეტა",
+        "Use Relative References" => "ფარდობითი ცნობარების გამოყენება",
+        "Run\nMacro" => "მაკროსის\nგაშვება",
+        "Macros…" => "მაკროსები…",
+        "Recording" => "იწერება",
+        "New Macro" => "ახალი მაკროსი",
+        "Show" => "ჩვენება",
         _ => return None,
     })
 }
