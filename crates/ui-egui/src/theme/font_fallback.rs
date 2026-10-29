@@ -38,7 +38,7 @@ pub(super) fn load_fallback(fonts: &mut FontDefinitions, _han: HanOrder) -> Vec<
     // The browser has no system faces to read; the site may supply a Georgian one.
     match SUPPLIED_GEORGIAN.get() {
         Some(bytes) if super::font_setup::font_parses(bytes, 0) => {
-            fonts.font_data.insert("sys-georgian".into(), Arc::new(FontData::from_owned(bytes.clone())));
+            fonts.font_data.insert("sys-georgian".into(), std::sync::Arc::new(egui::FontData::from_owned(bytes.clone())));
             vec!["sys-georgian".into()]
         }
         _ => Vec::new(),
