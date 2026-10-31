@@ -303,6 +303,7 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Sheet Options|View" => "ხედი",
         "Print" => "დაბეჭდვა",
         "Click to add data" => "დაწკაპეთ მონაცემების დასამატებლად",
+        "Click to copy" => "დაწკაპეთ დასაკოპირებლად",
         "Add header" => "ზედა კოლონტიტულის დამატება",
         "Add footer" => "ქვედა კოლონტიტულის დამატება",
         "(none)" => "(არცერთი)",
