@@ -627,6 +627,7 @@ impl Session {
         let n = (1..).find(|n| !self.docs.iter().any(|d| d.title == format!("{book}{n}") && d.path.is_none())).unwrap_or(1);
         let mut wb = Workbook::new();
         Arc::make_mut(&mut wb.sheets[0]).name = format!("{sheet}1");
+        wb.props.author = self.prefs.user_name.clone();
         for _ in 1..self.prefs.sheets_in_new_workbook.clamp(1, 255) {
             let name = wb.next_sheet_name_in(&sheet);
             wb.sheets.push(Arc::new(gridcraft_model::Sheet::new(name)));
