@@ -1200,6 +1200,17 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Recording" => "იწერება",
         "New Macro" => "ახალი მაკროსი",
         "Show" => "ჩვენება",
+        "Equation" => "განტოლება",
+        "Insert New Equation..." => "ახალი განტოლების ჩასმა...",
+        "Trace Error" => "შეცდომის მიდევნება",
+        "Python Mode" => "Python-ის რეჟიმი",
+        "Recently Used" => "ბოლოს გამოყენებული",
+        "More Functions" => "სხვა ფუნქციები",
+        "Page order" => "გვერდების რიგი",
+        "Down, then over" => "ჯერ ქვემოთ, შემდეგ მარჯვნივ",
+        "Over, then down" => "ჯერ მარჯვნივ, შემდეგ ქვემოთ",
+        "Collapse dialog" => "დიალოგის აკეცვა",
+        "Expand dialog" => "დიალოგის ჩამოშლა",
         _ => return None,
     })
 }
