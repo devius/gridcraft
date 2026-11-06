@@ -1217,7 +1217,9 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Spin Button" => "ისრიანი მთვლელი",
         "Draw a button that runs a macro or a command" => "მაკროსის ან ბრძანების გამშვები ღილაკის დახატვა",
         "Draw a slider that sets a whole number in a linked cell" => "დაკავშირებულ უჯრაში მთელი რიცხვის დამყენებელი სლაიდერის დახატვა",
-        "Draw a spin button that steps a whole number in a linked cell" => "დაკავშირებულ უჯრაში მთელი რიცხვის ბიჯით შემცვლელი ისრიანი მთვლელის დახატვა",
+        "Draw a spin button that steps a whole number in a linked cell" => {
+            "დაკავშირებულ უჯრაში მთელი რიცხვის ბიჯით შემცვლელი ისრიანი მთვლელის დახატვა"
+        }
         "Edit Text" => "ტექსტის რედაქტირება",
         "Assign Action…" => "ქმედების მინიჭება…",
         "Format Control…" => "მართვის ელემენტის ფორმატირება…",
