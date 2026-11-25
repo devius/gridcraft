@@ -1250,6 +1250,16 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Open Hyperlink" => "ბმულის გახსნა",
         "Remove Hyperlink" => "ბმულის მოხსნა",
         "Resize formula bar" => "ფორმულათა ზოლის ზომის შეცვლა",
+        "More entries not shown" => "დანარჩენი ჩანაწერები არ ჩანს",
+        "Copy Cells" => "უჯრების კოპირება",
+        "Fill Series" => "მწკრივით შევსება",
+        "Fill Formatting Only" => "მხოლოდ ფორმატირების შევსება",
+        "Fill Without Formatting" => "შევსება ფორმატირების გარეშე",
+        "Fill Days" => "დღეებით შევსება",
+        "Fill Weekdays" => "სამუშაო დღეებით შევსება",
+        "Fill Months" => "თვეებით შევსება",
+        "Fill Years" => "წლებით შევსება",
+        "Auto Fill Options" => "ავტოშევსების პარამეტრები",
         _ => return None,
     })
 }
