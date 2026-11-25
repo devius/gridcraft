@@ -1263,7 +1263,9 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "A % can't be combined with a link in an equation." => "განტოლებაში % ბმულთან ერთად ვერ გამოიყენება.",
         "A calculated field can't use Distinct Count." => "გამოთვლად ველში „განსხვავებული მნიშვნელობების რაოდენობა“ ვერ გამოიყენება.",
         "An equation can be at most 4096 bytes long." => "განტოლების ზომა მაქსიმუმ 4096 ბაიტია.",
-        "An equation can have at most 2500 matrix cells (rows times the widest row)." => "განტოლებას შეიძლება ჰქონდეს მაქსიმუმ 2500 მატრიცის უჯრა (სტრიქონების რაოდენობა გამრავლებული ყველაზე გრძელი სტრიქონის სიგრძეზე).",
+        "An equation can have at most 2500 matrix cells (rows times the widest row)." => {
+            "განტოლებას შეიძლება ჰქონდეს მაქსიმუმ 2500 მატრიცის უჯრა (სტრიქონების რაოდენობა გამრავლებული ყველაზე გრძელი სტრიქონის სიგრძეზე)."
+        }
         "Can't use function '{function}' in math mode" => "ფუნქცია '{function}' მათემატიკურ რეჟიმში ვერ გამოიყენება",
         "Can't use function '{function}' in text mode" => "ფუნქცია '{function}' ტექსტურ რეჟიმში ვერ გამოიყენება",
         "Cannot use both \\tag and \\nonumber in the same row" => "\\tag და \\nonumber ერთ სტრიქონში ერთად ვერ გამოიყენება",
@@ -1294,7 +1296,9 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Extra }" => "ზედმეტი }",
         "Format Control: {name}" => "მართვის ელემენტის ფორმატირება: {name}",
         "Got function '{function}' with no arguments as \\tag" => "მიღებულია ფუნქცია '{function}' არგუმენტების გარეშე \\tag-ად",
-        "Got function '{function}' with no arguments as argument to '{parent}'" => "მიღებულია ფუნქცია '{function}' არგუმენტების გარეშე '{parent}'-ის არგუმენტად",
+        "Got function '{function}' with no arguments as argument to '{parent}'" => {
+            "მიღებულია ფუნქცია '{function}' არგუმენტების გარეშე '{parent}'-ის არგუმენტად"
+        }
         "Got function '{function}' with no arguments as subscript" => "მიღებულია ფუნქცია '{function}' არგუმენტების გარეშე ქვედა ინდექსად",
         "Got function '{function}' with no arguments as superscript" => "მიღებულია ფუნქცია '{function}' არგუმენტების გარეშე ზედა ინდექსად",
         "Height: {points} ({pixels} pixels)" => "სიმაღლე: {points} ({pixels} პიქსელი)",
@@ -1332,9 +1336,15 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Summarize by Distinct Count" => "შეჯამება: განსხვავებული მნიშვნელობების რაოდენობა",
         "This equation could not be laid out." => "ამ განტოლების განლაგება ვერ მოხერხდა.",
         "This equation is too large to draw." => "ეს განტოლება დასახატად ზედმეტად დიდია.",
-        "This workbook has a PivotTable with a Distinct Count value field. In the .xlsx file it is stored as a plain Count plus a marker that only GridCraft reads, so Excel's Refresh turns it into a plain count." => "ამ სამუშაო წიგნში არის კრებსითი ცხრილი, რომლის მნიშვნელობის ველი „განსხვავებული მნიშვნელობების რაოდენობას“ იყენებს. .xlsx ფაილში ის ინახება როგორც ჩვეულებრივი „რაოდენობა“ და ნიშანი, რომელსაც მხოლოდ GridCraft კითხულობს, ამიტომ Excel-ში განახლება მას ჩვეულებრივ რაოდენობად აქცევს.",
-        "Too many expansions: infinite loop or need to increase maxExpand setting" => "მაკროსების ზედმეტად ბევრი გაშლა: უსასრულო ციკლი ან საჭიროა maxExpand-ის გაზრდა",
-        "Too many math in a row: expected {expected}, but got {got}" => "ზედმეტად ბევრი მათემატიკური ელემენტი ზედიზედ: მოსალოდნელი იყო {expected}, მიღებულია {got}",
+        "This workbook has a PivotTable with a Distinct Count value field. In the .xlsx file it is stored as a plain Count plus a marker that only GridCraft reads, so Excel's Refresh turns it into a plain count." => {
+            "ამ სამუშაო წიგნში არის კრებსითი ცხრილი, რომლის მნიშვნელობის ველი „განსხვავებული მნიშვნელობების რაოდენობას“ იყენებს. .xlsx ფაილში ის ინახება როგორც ჩვეულებრივი „რაოდენობა“ და ნიშანი, რომელსაც მხოლოდ GridCraft კითხულობს, ამიტომ Excel-ში განახლება მას ჩვეულებრივ რაოდენობად აქცევს."
+        }
+        "Too many expansions: infinite loop or need to increase maxExpand setting" => {
+            "მაკროსების ზედმეტად ბევრი გაშლა: უსასრულო ციკლი ან საჭიროა maxExpand-ის გაზრდა"
+        }
+        "Too many math in a row: expected {expected}, but got {got}" => {
+            "ზედმეტად ბევრი მათემატიკური ელემენტი ზედიზედ: მოსალოდნელი იყო {expected}, მიღებულია {got}"
+        }
         "Too many tab characters: &" => "ზედმეტად ბევრი ტაბულაციის სიმბოლო: &",
         "Undefined control sequence: {name}" => "განუსაზღვრელი ბრძანება: {name}",
         "Unexpected end of CD row after @" => "CD სტრიქონის მოულოდნელი დასასრული @-ის შემდეგ",
@@ -1351,10 +1361,16 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "\\verb assertion failed" => "\\verb-ის შემოწმება ვერ შესრულდა",
         "only one infix operator per group" => "თითო ჯგუფში მხოლოდ ერთი ინფიქსური ოპერატორი დაიშვება",
         "prooftree ended with {count} proof stack item(s), expected 1" => "prooftree დასრულდა მტკიცების სტეკის {count} ელემენტით, მოსალოდნელი იყო 1",
-        "prooftree has a \\LeftLabel or \\RightLabel without a following inference command" => "prooftree-ში არის \\LeftLabel ან \\RightLabel, რომელსაც დასკვნის ბრძანება არ მოსდევს",
+        "prooftree has a \\LeftLabel or \\RightLabel without a following inference command" => {
+            "prooftree-ში არის \\LeftLabel ან \\RightLabel, რომელსაც დასკვნის ბრძანება არ მოსდევს"
+        }
         "without {key}: another macro took it while recording" => "{key}-ის გარეშე: ჩაწერისას ის სხვა მაკროსმა დაიკავა",
-        "{command} needs {count} premise(s), but only {available} available" => "{command}-ს სჭირდება {count} წანამძღვარი, მაგრამ ხელმისაწვდომია მხოლოდ {available}",
-        "{command} valid only as a supported bussproofs command within prooftree" => "{command} მოქმედებს მხოლოდ prooftree-ში, როგორც bussproofs-ის მხარდაჭერილი ბრძანება",
+        "{command} needs {count} premise(s), but only {available} available" => {
+            "{command}-ს სჭირდება {count} წანამძღვარი, მაგრამ ხელმისაწვდომია მხოლოდ {available}"
+        }
+        "{command} valid only as a supported bussproofs command within prooftree" => {
+            "{command} მოქმედებს მხოლოდ prooftree-ში, როგორც bussproofs-ის მხარდაჭერილი ბრძანება"
+        }
         "{command} valid only within array environment" => "{command} მოქმედებს მხოლოდ array გარემოში",
         "{subarray} can contain only one column" => "{subarray} შეიძლება შეიცავდეს მხოლოდ ერთ სვეტს",
         _ => return None,
